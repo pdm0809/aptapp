@@ -195,9 +195,13 @@
   const VOICE_CONF_BASE = 0.7, VOICE_CONF_W = 0.3; // P2: score * (0.7 + 0.3 * confidence)
   const VOICE_RANK_DECAY = [1.0, 0.85, 0.7, 0.55, 0.4]; // P2: confidence 없을 때 순위 감쇄
   const JAMO_SUB_COST = { 'ㅂㅍ': 0.3, 'ㄷㅌ': 0.3, 'ㄱㅋ': 0.3, 'ㅈㅊ': 0.3, 'ㅐㅔ': 0.2, 'ㄱㅇ': 0.3 }; // P3: 혼동 자모쌍 치환 비용 (키=정렬 후 join)
-  const GPS_BONUS_NEAR = 25, GPS_BONUS_MID = 15, GPS_BONUS_FAR = 5;  // P4: 300m / 800m / 1500m 이내 가산
-  const GPS_BONUS_NEAR_M = 300, GPS_BONUS_MID_M = 800, GPS_BONUS_FAR_M = 1500;
-  const GPS_BONUS_MAX_ACC = 80;             // P4: 이 정확도(m) 이하일 때만 가산
+  // P4: 위치 가산 = 신선도 × 정확도 (coarse 위치 기준, voiceLocBonus)
+  const VOICE_POS_FRESH_MS = 180000;        // 실측 튜닝 전 잠정치 — 3분 초과 위치는 가산 0 (오토바이 10분이면 수 km 이동 → 보수적)
+  const VOICE_LOC_NEAR_M = 300, VOICE_LOC_MID_M = 800, VOICE_LOC_FAR_M = 1500; // 실측 튜닝 전 잠정치 — 거리 구간
+  const VOICE_ACC_GPS_M = 80, VOICE_ACC_WIFI_M = 800; // 실측 튜닝 전 잠정치 — accuracy로 측위 원천 추정 (≤80 GPS급, ≤800 WiFi급, 그 외 기지국급)
+  const VOICE_LOC_BONUS_GPS = [25, 15, 5];  // 실측 튜닝 전 잠정치 — [≤300m, ≤800m, ≤1500m]
+  const VOICE_LOC_BONUS_WIFI = [12, 7, 2];  // 실측 튜닝 전 잠정치
+  const VOICE_LOC_BONUS_CELL = [2, 0, 0];   // 실측 튜닝 전 잠정치
   const VOICE_SUGGEST_N = 3, VOICE_ALT_CHIP_N = 2; // P5: 유사 단지 추천 칩 수 / n-best 차순위 칩 수
   const VOICE_CAND_N = 5;                   // P8: 인식 후보 칩 수
   const VOICE_CLEAR_SCORE = 50, VOICE_CLEAR_GAP = 8; // P8: 명확성 게이트 (1위 점수 / 1-2위 격차)
@@ -218,6 +222,7 @@
   let voiceQuery = null;           // P5: 음성 확정 검색어 {text, alts} — refreshDisplay에서 1회 소비
   let voiceView = null;            // 음성 전용 화면(무매칭/후보) {text, html} — 입력값이 그대로인 동안 GPS 재렌더에도 유지
   let voiceCandList = [], voiceSuggestList = [];
+  let coarseLat = null, coarseLon = null, coarseAcc = null, coarseT = null;  // 음성 검색 위치 가산 전용 (ACC_REJECT 이전 모든 유효 fix). 표시/WPS/래치에서 사용 금지
 
   window.onload = () => {
     const savedRad = localStorage.getItem('aptSearchRadius');
@@ -253,6 +258,7 @@
     const acc = Number.isFinite(c.accuracy) ? c.accuracy : 999;
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
     gpsErr = null; lastAcc = acc;
+    coarseLat = lat; coarseLon = lon; coarseAcc = c.accuracy; coarseT = now;  // 음성 위치 가산 전용 — 거절 전 기록
     if (acc > ACC_COLLAPSE) maybeLatch();
     if (acc > ACC_REJECT) { updateStatus(); return; }   // 정확도 불량: 위치 갱신 거부
 
@@ -944,7 +950,8 @@
     }));
     return out;
   }
-  // 대안별 정규화 → 검색 → 결합 점수 내림차순 (동점은 원래 순서 유지). searchFn: searchItemsWithScores
+  // 대안별 정규화 → 검색 → 결합 점수(base 기준) 내림차순. 동점이면 위치 가산 큰 순 → 원래 순서. searchFn: searchItemsWithScores
+  // 위치 가산은 동점 tiebreak로만 반영: 정확 일치 대안이 근처 오타 대안에 밀리지 않도록
   function rankVoiceAlts(alts, searchFn) {
     const seen = new Set(), out = [];
     alts.forEach((a, idx) => {
@@ -953,9 +960,11 @@
       seen.add(text);
       const scored = searchFn(text);
       const top = scored.length ? scored[0] : null;
-      out.push({ text, idx, rank: a.rank, confidence: a.confidence, scored, top, combined: top ? voiceCombinedScore(top.score, a.confidence, a.rank) : 0 });
+      out.push({ text, idx, rank: a.rank, confidence: a.confidence, scored, top,
+        combined: top ? voiceCombinedScore(top.base, a.confidence, a.rank) : 0,
+        locBonus: top ? top.score - top.base : 0 });
     });
-    return out.sort((x, y) => (y.combined - x.combined) || (x.idx - y.idx));
+    return out.sort((x, y) => (y.combined - x.combined) || (y.locBonus - x.locBonus) || (x.idx - y.idx));
   }
   // [{item, score}] (점수순) → 단지명 중복 제거 [{name, score, addr}] 상위 n
   function topComplexes(scored, n) {
@@ -964,20 +973,27 @@
       const name = String(s.item.name || '');
       if (!name || seen.has(name)) continue;
       seen.add(name);
-      out.push({ name, score: s.score, addr: String(s.item.addr || '') });
+      out.push({ name, score: s.score, base: s.base, addr: String(s.item.addr || '') });
       if (out.length >= n) break;
     }
     return out;
   }
   // 'expand' = 바로 펼침, 'candidates' = 후보 선택 UI, 'none' = 매칭 없음(P5 폴백)
+  // 게이트는 가산 전 base로 판단: 위치 가산이 오타 수준 매칭을 게이트 위로 밀어올려 확인 없이 자동 펼치는 문제 방지.
+  // 위치는 순위(칩 순서)에만 반영하고, P8의 '명확할 때만 펼침'은 매칭 자체의 확실성으로만 결정한다.
   function decideVoiceAction(cands) {
     if (!cands || !cands.length) return 'none';
     const t1 = cands[0], t2 = cands[1];
-    if (t1.score >= VOICE_CLEAR_SCORE && (!t2 || t1.score - t2.score >= VOICE_CLEAR_GAP)) return 'expand';
+    if (t1.base >= VOICE_CLEAR_SCORE && (!t2 || t1.base - t2.base >= VOICE_CLEAR_GAP)) return 'expand';
     return 'candidates';
   }
-  function gpsBonusFor(d) {
-    return d <= GPS_BONUS_NEAR_M ? GPS_BONUS_NEAR : d <= GPS_BONUS_MID_M ? GPS_BONUS_MID : d <= GPS_BONUS_FAR_M ? GPS_BONUS_FAR : 0;
+  // 위치 가산 = 신선도 × 정확도. acc: 측위 accuracy(m), ageMs: 위치 나이, dist: 단지까지 거리(m)
+  // 브라우저 Geolocation API는 측위 원천(GPS/WiFi/기지국)을 직접 알려주지 않으므로 accuracy 숫자로 추정한다.
+  function voiceLocBonus(acc, ageMs, dist) {
+    if (!Number.isFinite(acc) || !Number.isFinite(ageMs) || !Number.isFinite(dist)) return 0;
+    if (ageMs > VOICE_POS_FRESH_MS) return 0;
+    const tbl = acc <= VOICE_ACC_GPS_M ? VOICE_LOC_BONUS_GPS : acc <= VOICE_ACC_WIFI_M ? VOICE_LOC_BONUS_WIFI : VOICE_LOC_BONUS_CELL;
+    return dist <= VOICE_LOC_NEAR_M ? tbl[0] : dist <= VOICE_LOC_MID_M ? tbl[1] : dist <= VOICE_LOC_FAR_M ? tbl[2] : 0;
   }
 
   // [2단계] 토큰 순서 매칭: "펜타 한신 2차" → "펜타시티 한신더휴 2차" (중간 단어 생략 허용)
@@ -1187,7 +1203,7 @@
   if (window.matchMedia('(display-mode: standalone)').matches) { document.getElementById('install-btn').style.display = 'none'; }
 
   // 검색 엔진 (메인 검색·콜드 검색 공용). rawQuery: 입력 원문. 반환: 매칭 행 배열 (순위순)
-  // 반환: [{item, score}] (순위순). score는 P4 GPS 근접 가산 포함
+  // 반환: [{item, base, score}] (score순). base = 매칭 점수(가산 전), score = base + P4 위치 가산
   function searchItemsWithScores(rawQuery) {
     const searchVal = String(rawQuery || '').toLowerCase().replace(/\s+/g, "");
     if (!searchVal) return [];
@@ -1197,25 +1213,27 @@
       return targetStr.includes(searchVal);
     });
 
-    if (exactMatches.length > 0) {
-      // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단 (GPS 가산 없음)
-      return exactMatches.sort((a,b) => a.name.localeCompare(b.name)).map(i => ({ item: i, score: EXACT_MATCH_SCORE }));
-    }
-    // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정 (앞 단계 결과가 있으면 뒤 단계는 계산 안 함)
-    const tiers = [
-      () => allData.map(i => ({ item: i, score: tokenSubseqScore(rawQuery, i) })),
-      () => allData.map(i => ({ item: i, score: chosungScore(rawQuery, i) })),
-      () => allData.map(i => ({ item: i, score: getMatchScore(searchVal, i) })),
-    ];
     let scoredItems = [];
-    for (const t of tiers) {
-      scoredItems = t().filter(h => h.score > 0);
-      if (scoredItems.length) break;
+    if (exactMatches.length > 0) {
+      // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단.
+      // 위치 가산은 다른 매칭 타입과 동일 적용 → 정확+근접(60+25)이 항상 오타+근접(35+25)보다 위
+      scoredItems = exactMatches.map(i => ({ item: i, base: EXACT_MATCH_SCORE }));
+    } else {
+      // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정 (앞 단계 결과가 있으면 뒤 단계는 계산 안 함)
+      const tiers = [
+        () => allData.map(i => ({ item: i, base: tokenSubseqScore(rawQuery, i) })),
+        () => allData.map(i => ({ item: i, base: chosungScore(rawQuery, i) })),
+        () => allData.map(i => ({ item: i, base: getMatchScore(searchVal, i) })),
+      ];
+      for (const t of tiers) {
+        scoredItems = t().filter(h => h.base > 0);
+        if (scoredItems.length) break;
+      }
     }
 
-    // [P4] GPS 정확도가 양호할 때만 가까운 단지 가산
-    const gpsOk = Number.isFinite(myAcc) && myAcc <= GPS_BONUS_MAX_ACC && Number.isFinite(myLat) && Number.isFinite(myLon);
-    if (gpsOk) scoredItems.forEach(h => { h.score += gpsBonusFor(getDist(h.item.lat, h.item.lon)); });
+    // [P4] 위치 가산 (신선도 × 정확도, coarse 위치 기준)
+    const ageMs = coarseT == null ? Infinity : Date.now() - coarseT;
+    scoredItems.forEach(h => { h.score = h.base + voiceLocBonus(coarseAcc, ageMs, getDist(h.item.lat, h.item.lon, coarseLat, coarseLon)); });
 
     scoredItems.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;

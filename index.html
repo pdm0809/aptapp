@@ -57,6 +57,22 @@
     .latch-badge { background: #2a2400; border: 1.5px solid var(--common); color: var(--common); font-size: 13px; font-weight: bold; padding: 10px; border-radius: 10px; margin-bottom: 8px; text-align: center; cursor: pointer; }
     .approach-hint { color: #4a6a70; font-size: 12px; margin-top: 8px; }
     #gps-acc-msg { font-size: 13px; margin-top: 8px; white-space: pre-line; }
+    .fchip-row { display:flex; gap:6px; margin-bottom:8px; }
+    .fchip { flex:1; background:#222; color:#999; border:1px solid #444; border-radius:8px; padding:10px 0; font-size:13px; font-weight:bold; cursor:pointer; }
+    .fchip.active { background:var(--accent); color:#000; border-color:var(--accent); }
+    .rank-sec { color:var(--common); font-size:13px; font-weight:bold; margin:10px 0 6px 2px; }
+    #snack-bar { display:none; position:fixed; bottom:110px; left:10px; right:10px; background:#1c1c1e; border:1.5px solid var(--accent); border-radius:12px; padding:12px; z-index:100001; text-align:center; font-size:14px; }
+    #snack-bar button { margin:4px 4px 0 4px; padding:8px 16px; border-radius:8px; border:none; font-weight:bold; font-size:14px; cursor:pointer; }
+    .snack-ok { background:var(--accent); color:#000; }
+    .snack-no { background:#333; color:#fff; }
+    .cold-card { background:#1c1c1e; border:1.5px solid var(--common); border-radius:12px; padding:16px; margin-bottom:10px; text-align:center; }
+    .cold-status { color:#ffb340; font-size:13px; font-weight:bold; text-align:center; margin-bottom:10px; }
+    .cold-sec { color:var(--accent); font-size:13px; font-weight:bold; margin:12px 0 6px 2px; }
+    .chip-row { display:flex; flex-wrap:wrap; gap:6px; }
+    .chip { background:#222; color:#fff; border:1px solid #444; border-radius:20px; padding:8px 14px; font-size:13px; cursor:pointer; }
+    .chip small { color:#999; font-size:11px; }
+    .cold-x { color:var(--common); font-weight:bold; padding:0 8px; cursor:pointer; }
+    #cold-search { display:block; width:100%; }
     .row-btn { width: 45px; height: 45px; border-radius: 10px; border: 1.5px solid #444; background: #333; color: white; font-weight: bold; font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   </style>
 </head>
@@ -97,6 +113,7 @@
   </div>
 
   <button class="fab" onclick="showAddModal()">+</button>
+  <div id="snack-bar"></div>
 
   <div id="uni-modal" class="modal-overlay">
     <div class="modal-box">
@@ -142,6 +159,27 @@
   const HYST_MS = 20000, HYST_MIN_M = 15, RENDER_MIN_MOVE = 5, PREFETCH_R = 150;
   const GPS_ERR_MSG = { 1: '위치 권한 거부됨 — 설정에서 위치 권한을 허용해 주세요', 2: '위치 신호 없음 — 마지막 위치 유지 중', 3: '위치 응답 지연 — 마지막 위치 유지 중' };
   let watchId = null, myAcc = null, lastAcc = null, gpsErr = null;
+  // ===== 래치 정확도 스코어링 (실측 튜닝 전 잠정치) =====
+  const FIXBUF_N = 8, FIXBUF_WIN_MS = 10000, FIXBUF_GOOD_ACC = 30; // 실측 튜닝 전 잠정치 — P1 링버퍼: acc≤30m fix, 최대 8개, 10초 윈도우
+  const VOTE_DECAY_MS = 5000;              // 실측 튜닝 전 잠정치 — 득표 시간감쇄 시상수
+  const K_NEAREST = 3, K_PENALTY_M = 10, VALID_COORD_RATIO = 0.5; // 실측 튜닝 전 잠정치 — P2
+  const DK_PTS_FULL = 30, DK_PTS_PART = 20, DK_MARGIN_FULL = 25, DK_MARGIN_PART = 15, DK_MARGIN_FALLBACK = 10; // 실측 튜닝 전 잠정치
+  const VOTE_PTS_FULL = 25, VOTE_PTS_PART = 15, VOTE_FULL = 0.80, VOTE_PART = 0.70, VOTE_FALLBACK = 0.60, VOTE_GAP_FALLBACK = 0.20; // 실측 튜닝 전 잠정치
+  const SPAN_PTS_FULL = 20, SPAN_PTS_PART = 15, SPAN_FULL = 180, SPAN_PART = 120, SPAN_FALLBACK = 90; // 실측 튜닝 전 잠정치
+  const SPAN_R_M = 100;                    // 실측 튜닝 전 잠정치 — 방위각 전개폭 산정 반경
+  const HEAD_PTS_FULL = 15, HEAD_PTS_PART = 8, HEAD_FULL = 0.7, HEAD_PART = 0.4, SPEED_SLOW_KMH = 5; // 실측 튜닝 전 잠정치
+  const HEAD_MIN_MS = 1000;                // 실측 튜닝 전 잠정치 — 진행방향 산정 최소 시간폭
+  const DWELL_PTS_FULL = 10, DWELL_PTS_PART = 5, DWELL_FULL_MS = 6000, DWELL_PART_MS = 4000; // 실측 튜닝 전 잠정치
+  const SCORE_CUTOFF = 70, P5_BONUS = 10, CHALLENGER_MIN = 85; // 실측 튜닝 전 잠정치 — 100점 만점, P5 가점은 합계 100 cap
+  const GOOD_FIX_ACC = 25, GOOD_FIX_MIN = 3;   // 실측 튜닝 전 잠정치 — 폴백 #4
+  // ===== 콜드스타트 (실측 튜닝 전 잠정치) =====
+  const COLD_ZONE_MS = 10 * 60 * 1000;     // 실측 튜닝 전 잠정치 — Zone A: 저장 후 10분 이내
+  const COARSE_GATE_M = 300;               // 실측 튜닝 전 잠정치 — 복원 허용 최대 거리
+  const COARSE_TIMEOUT_MS = 10000, COARSE_MAX_ACC = 800, COARSE_CHIP_N = 3; // 실측 튜닝 전 잠정치
+  const COLD_SILENT_M = 60;                // 실측 튜닝 전 잠정치 — 무음 갱신 기준
+  const SNACK_MS = 5000;                   // 실측 튜닝 전 잠정치 — 스낵바 자동 소멸
+  const COLD_EXIT_STREAK = 3, COLD_EXIT_MOVE_M = 30; // 실측 튜닝 전 잠정치 — 지상 탈출 판정
+  const RECENT_MAX = 10, RECENT_CHIP_N = 5; // 실측 튜닝 전 잠정치
   let lastGood = null, pendingJump = null;       // lastGood = {lat, lon, acc, t}
   let usingSavedPos = null;                      // GPS 미확보 시 사용 중인 저장 위치
   let latch = null, latchSuppressed = false;     // 지하 진입 고정 상태
@@ -149,6 +187,12 @@
   let dataVer = 0, suppressNearFx = false;
   const prefetch = new Map();                    // 아파트명 -> 사전 준비된 동 목록
   let wakeLock = null, wakeWanted = false;
+  let fixBuf = [];                 // P1: {lat, lon, acc, t} 링버퍼 (P4의 이동 trail 겸용)
+  let coldChecked = false, coldView = null, coldDismissed = false, coldSaved = null;
+  let coldAnchor = null, coldGoodStreak = 0;
+  let snackTimer = null, snackName = null, snackMutedFor = null;
+  let latchFilter = null;
+  let coldNameList = [], coldRecentList = [], coldSearchList = [], coldCoarseList = [];
 
   window.onload = () => {
     const savedRad = localStorage.getItem('aptSearchRadius');
@@ -207,12 +251,110 @@
   }
 
   function acceptPos(lat, lon, acc, t) {
+    if (latch && latch.kind === 'cold' && !coldDismissed) {
+      if (acceptPosCold(lat, lon, acc, t)) return;  // true=콜드 모드 유지
+      // false=지상 탈출 → 아래 일반 처리로 폴스루
+    }
     myLat = lat; myLon = lon; myAcc = acc;
     lastGood = { lat, lon, acc, t };
-    usingSavedPos = null; latchSuppressed = false;
+    usingSavedPos = null; latchSuppressed = false; coldView = null;
+    pushFixBuf(lat, lon, acc, t);
+    saveGoodComplex(lat, lon, acc, t);
     try { localStorage.setItem('last_good_pos', JSON.stringify({ lat, lon, t })); } catch (e) {}
     if (!isGpsReady) { clearTimeout(gpsTimeout); isGpsReady = true; }
     if (latch && acc <= ACC_LATCH_EXIT) latch = null;
+    updateStatus();
+    refreshDisplay();
+  }
+
+  // 콜드 복원 화면 유지 중 위치 수신: 화면은 고정, 탈출 조건 충족 시 false
+  function acceptPosCold(lat, lon, acc, t) {
+    myLat = lat; myLon = lon; myAcc = acc;
+    lastGood = { lat, lon, acc, t };
+    usingSavedPos = null;
+    pushFixBuf(lat, lon, acc, t);
+    try { localStorage.setItem('last_good_pos', JSON.stringify({ lat, lon, t })); } catch (e) {}
+    if (!isGpsReady) { clearTimeout(gpsTimeout); isGpsReady = true; }
+    updateStatus();
+    const cur = latch.names[0];
+    const dCur = complexMinDist(cur, lat, lon);
+    if (acc <= ACC_LATCH_EXIT) coldGoodStreak++; else coldGoodStreak = 0;
+    if (!coldAnchor) coldAnchor = { lat, lon };
+    // 지상 탈출: 양호 fix 연속 + 이동 + 표시 단지와 일치 → 자동 해제 후 일반 모드 복귀
+    if (coldGoodStreak >= COLD_EXIT_STREAK && dCur <= searchRadius &&
+        distM(lat, lon, coldAnchor.lat, coldAnchor.lon) > COLD_EXIT_MOVE_M) {
+      return false;
+    }
+    if (dCur <= COLD_SILENT_M) {
+      const el = document.getElementById('cold-badge-txt');
+      if (el) el.textContent = '🕘 ' + fmtAgo(Date.now() - (latch.savedT || latch.since)) + ' 위치 기준 — 현위치 아님';
+    } else {
+      let best = null, bestD = 999999;
+      complexNames().forEach(n => { const d = complexMinDist(n, lat, lon); if (d < bestD) { bestD = d; best = n; } });
+      if (best && best !== snackMutedFor) { snackName = best; showColdSnack(best); }
+    }
+    return true;
+  }
+
+  // 양호 위치에서 표시 중인 단지 저장 (콜드스타트 복원용)
+  function saveGoodComplex(lat, lon, acc, t) {
+    const cnt = new Map(), addrOf = new Map();
+    (lastShown || []).forEach(r => {
+      if (!r || !r.item || !r.near) return;
+      const n = String(r.item.name || '');
+      if (!n) return;
+      cnt.set(n, (cnt.get(n) || 0) + 1);
+      if (!addrOf.get(n) && r.item.addr) addrOf.set(n, r.item.addr);
+    });
+    let name = null, best = 0;
+    cnt.forEach((c, n) => { if (c > best) { best = c; name = n; } });
+    if (!name) return;
+    try {
+      localStorage.setItem('last_good_complex', JSON.stringify({ name, lat, lon, t, acc }));
+      saveRecent(name, addrOf.get(name) || '');
+    } catch (e) {}
+  }
+  function getSavedComplex() {
+    try {
+      const s = JSON.parse(localStorage.getItem('last_good_complex') || 'null');
+      if (s && s.name && Number.isFinite(s.lat) && Number.isFinite(s.lon) && Number.isFinite(s.t)) return s;
+    } catch (e) {}
+    return null;
+  }
+  function getRecents() {
+    try {
+      const a = JSON.parse(localStorage.getItem('recent_complexes') || '[]');
+      return Array.isArray(a) ? a.filter(r => r && r.name) : [];
+    } catch (e) { return []; }
+  }
+  function saveRecent(name, addr) {
+    if (!name) return;
+    const list = getRecents().filter(r => r.name !== name);
+    list.unshift({ name, addr: addr || '' });
+    try { localStorage.setItem('recent_complexes', JSON.stringify(list.slice(0, RECENT_MAX))); } catch (e) {}
+  }
+
+  // 콜드 복원 중 다른 단지 감지 스낵바
+  function showColdSnack(name) {
+    const el = document.getElementById('snack-bar');
+    if (!el) return;
+    if (el.style.display === 'block' && el.dataset.name === name) return;  // 같은 단지 표시 중이면 타이머 유지 (매 fix마다 연장 방지)
+    el.dataset.name = name;
+    el.innerHTML = `📍 현위치 ${esc(name)} 감지됨 — 화면을 변경할까요?<br><button class="snack-ok" onclick="coldSnackChange()">변경</button><button class="snack-no" onclick="hideColdSnack()">유지</button>`;
+    el.style.display = 'block';
+    clearTimeout(snackTimer);
+    snackTimer = setTimeout(hideColdSnack, SNACK_MS);
+  }
+  function hideColdSnack() {
+    const el = document.getElementById('snack-bar');
+    if (el) { el.style.display = 'none'; el.dataset.name = ''; }
+    clearTimeout(snackTimer); snackTimer = null;
+    snackMutedFor = snackName;
+  }
+  function coldSnackChange() {
+    hideColdSnack();
+    latch = null; coldAnchor = null; coldGoodStreak = 0; latchFilter = null; coldView = null;
+    lastRender = null;
     updateStatus();
     refreshDisplay();
   }
@@ -238,12 +380,189 @@
     return String(a.dong || '').localeCompare(String(b.dong || ''), 'ko', { numeric: true });
   }
 
+  // ===== 래치 정확도: 단지 후보 스코어링 (순수 함수) =====
+  function itemCoords(item) {
+    if (!item || !item.lat) return [];
+    const lats = String(item.lat).split('|'), lons = String(item.lon).split('|'), out = [];
+    lats.forEach((lt, idx) => {
+      const a = parseFloat(lt), o = parseFloat(lons[idx]);
+      if (Number.isFinite(a) && Number.isFinite(o)) out.push({ lat: a, lon: o });
+    });
+    return out;
+  }
+  function complexNames() {
+    const seen = new Set();
+    (allData || []).forEach(i => { const n = String(i.name || ''); if (n) seen.add(n); });
+    return [...seen];
+  }
+  function complexItems(name) {
+    return (allData || []).filter(i => String(i.name) === name);
+  }
+  function complexValidRatio(name) {
+    const items = complexItems(name);
+    if (!items.length) return 0;
+    return items.filter(i => itemCoords(i).length > 0).length / items.length;
+  }
+  function distToItem(item, lat, lon) {
+    return getDist(item.lat, item.lon, lat, lon);
+  }
+  function complexMinDist(name, lat, lon) {
+    let minD = 999999;
+    complexItems(name).forEach(i => { const d = distToItem(i, lat, lon); if (d < minD) minD = d; });
+    return minD;
+  }
+  function dKAvg(name, lat, lon) {
+    const ds = complexItems(name).filter(i => itemCoords(i).length > 0)
+      .map(i => distToItem(i, lat, lon)).sort((a, b) => a - b).slice(0, K_NEAREST);
+    if (!ds.length) return { avg: 999999, n: 0 };
+    const avg = ds.reduce((s, d) => s + d, 0) / ds.length;
+    return { avg: ds.length < K_NEAREST ? avg + K_PENALTY_M : avg, n: ds.length };
+  }
+  function complexCentroid(name) {
+    let sLat = 0, sLon = 0, n = 0;
+    complexItems(name).forEach(i => itemCoords(i).forEach(c => { sLat += c.lat; sLon += c.lon; n++; }));
+    return n ? { lat: sLat / n, lon: sLon / n } : null;
+  }
+  // 기준점에서 반경 SPAN_R_M 내 단지 건물들을 바라보는 방위각 전개폭(도)
+  function bearingSpan(name, lat, lon) {
+    const cosLat = Math.cos(lat * Math.PI / 180), bs = [];
+    complexItems(name).forEach(i => itemCoords(i).forEach(c => {
+      if (distM(lat, lon, c.lat, c.lon) > SPAN_R_M) return;
+      let b = Math.atan2((c.lon - lon) * cosLat, c.lat - lat) * 180 / Math.PI;
+      if (b < 0) b += 360;
+      bs.push(b);
+    }));
+    if (bs.length < 2) return 0;
+    bs.sort((a, b) => a - b);
+    let maxGap = bs[0] + 360 - bs[bs.length - 1];
+    for (let k = 1; k < bs.length; k++) maxGap = Math.max(maxGap, bs[k] - bs[k - 1]);
+    return 360 - maxGap;
+  }
+  function pushFixBuf(lat, lon, acc, t) {
+    if (!(acc <= FIXBUF_GOOD_ACC)) return;
+    fixBuf.push({ lat, lon, acc, t });
+    fixBuf = fixBuf.filter(f => t - f.t <= FIXBUF_WIN_MS).slice(-FIXBUF_N);
+  }
+  // 각 fix가 최근접 단지에 (1/acc)*exp(-age/VOTE_DECAY_MS) 가중 투표 (age 기준 = 최신 fix 시각)
+  function voteComplexes() {
+    if (!fixBuf.length) return [];
+    const tRef = fixBuf[fixBuf.length - 1].t, names = complexNames(), votes = new Map();
+    let total = 0;
+    fixBuf.forEach(f => {
+      let best = null, bestD = 999999;
+      names.forEach(n => { const d = complexMinDist(n, f.lat, f.lon); if (d < bestD) { bestD = d; best = n; } });
+      if (!best) return;
+      const w = (1 / Math.max(f.acc, 1)) * Math.exp(-(tRef - f.t) / VOTE_DECAY_MS);
+      votes.set(best, (votes.get(best) || 0) + w);
+      total += w;
+    });
+    const out = [];
+    votes.forEach((v, name) => out.push({ name, votes: v, share: total > 0 ? v / total : 0 }));
+    return out.sort((a, b) => b.share - a.share);
+  }
+  // 이동 방향(처음→마지막 fix)과 최신 fix→단지중심 방향의 cos. 판정 불가 시 null
+  function headingCos(name) {
+    if (fixBuf.length < 2) return null;
+    const f0 = fixBuf[0], f1 = fixBuf[fixBuf.length - 1];
+    const dt = f1.t - f0.t;
+    if (dt < HEAD_MIN_MS) return null;
+    const cosLat = Math.cos(f1.lat * Math.PI / 180);
+    const mx = (f1.lon - f0.lon) * 111000 * cosLat, my = (f1.lat - f0.lat) * 111000;
+    const mv = Math.hypot(mx, my);
+    if (mv / (dt / 1000) * 3.6 < SPEED_SLOW_KMH) return null;
+    const c = complexCentroid(name);
+    if (!c) return null;
+    const cx = (c.lon - f1.lon) * 111000 * cosLat, cy = (c.lat - f1.lat) * 111000;
+    const cv = Math.hypot(cx, cy);
+    if (cv === 0) return null;
+    return (mx * cx + my * cy) / (mv * cv);
+  }
+  function dwellMs() {
+    return fixBuf.length < 2 ? 0 : fixBuf[fixBuf.length - 1].t - fixBuf[0].t;
+  }
+  function activeComplex(items) {
+    const cnt = new Map();
+    (items || lastShown || []).forEach(r => {
+      const n = r && r.item ? String(r.item.name || '') : '';
+      if (n) cnt.set(n, (cnt.get(n) || 0) + 1);
+    });
+    let best = null, bestC = 0;
+    cnt.forEach((c, n) => { if (c > bestC) { bestC = c; best = n; } });
+    return best;
+  }
+  function scoreComplexes(names, lat, lon) {
+    const voteMap = new Map(voteComplexes().map(v => [v.name, v.share]));
+    const dwell = dwellMs();
+    const base = names.map(name => ({ name, dkAvg: dKAvg(name, lat, lon).avg }));
+    const byD = [...base].sort((a, b) => a.dkAvg - b.dkAvg);
+    const leadGap = byD.length > 1 ? byD[1].dkAvg - byD[0].dkAvg : 999;
+    return base.map(b => {
+      const deltaD = b.name === byD[0].name ? leadGap : 0;  // 1위가 아니면 거리 마진 0점
+      const share = voteMap.get(b.name) || 0;
+      const span = bearingSpan(b.name, lat, lon);
+      const head = headingCos(b.name);
+      const pDk = deltaD >= DK_MARGIN_FULL ? DK_PTS_FULL : deltaD >= DK_MARGIN_PART ? DK_PTS_PART : 0;
+      // 득표 60~69% 구간은 0점이지만 폴백이 아님 — 다른 신호 만점으로 70점 도달 가능 (의도된 동작)
+      const pVote = share >= VOTE_FULL ? VOTE_PTS_FULL : share >= VOTE_PART ? VOTE_PTS_PART : 0;
+      const pSpan = span >= SPAN_FULL ? SPAN_PTS_FULL : span >= SPAN_PART ? SPAN_PTS_PART : 0;
+      const pHead = head == null ? 0 : head >= HEAD_FULL ? HEAD_PTS_FULL : head >= HEAD_PART ? HEAD_PTS_PART : 0;  // 저속 시 0점, 재배분 없음
+      const pDwell = dwell >= DWELL_FULL_MS ? DWELL_PTS_FULL : dwell >= DWELL_PART_MS ? DWELL_PTS_PART : 0;
+      return {
+        name: b.name, score: pDk + pVote + pSpan + pHead + pDwell,
+        parts: { dk: pDk, vote: pVote, span: pSpan, head: pHead, dwell: pDwell },
+        dkAvg: b.dkAvg, voteShare: share, span, validRatio: complexValidRatio(b.name)
+      };
+    });
+  }
+  // 폴백(상위 2개 동시 표시) 사유 | null. scored: 점수 내림차순(P5 적용 후), 최소 2개
+  function checkFallbacks(scored, deltaD, lat, lon) {
+    const s0 = scored[0], s1 = scored[1];
+    if ((s0.voteShare || 0) < VOTE_FALLBACK || (s0.voteShare - s1.voteShare) < VOTE_GAP_FALLBACK) return 'vote';
+    if (deltaD < DK_MARGIN_FALLBACK) return 'margin';
+    const good = fixBuf.filter(f => f.acc <= FIXBUF_GOOD_ACC);
+    if (good.length >= 1 && good.every(f =>
+        complexMinDist(s0.name, f.lat, f.lon) <= f.acc && complexMinDist(s1.name, f.lat, f.lon) <= f.acc)) return 'accuracy';
+    if (fixBuf.filter(f => f.acc <= GOOD_FIX_ACC).length < GOOD_FIX_MIN) return 'fewfix';
+    if (s0.validRatio < VALID_COORD_RATIO || s1.validRatio < VALID_COORD_RATIO) return 'badratio';
+    if (s0.span < SPAN_FALLBACK && s1.span < SPAN_FALLBACK) return 'span';
+    return null;
+  }
+  function rankComplexes(names, lat, lon) {
+    const uniq = [...new Set(names.filter(Boolean))];
+    if (uniq.length <= 1) return { mode: 'single', ordered: uniq, scores: [], reason: null };
+    let scored = scoreComplexes(uniq, lat, lon);
+    const active = activeComplex(lastShown);
+    const activeIn = !!(active && uniq.includes(active));
+    scored.forEach(s => { if (activeIn && s.name === active) s.score = Math.min(100, s.score + P5_BONUS); }); // P5는 가점만. renderMain 진입 로직 변경 금지
+    scored.sort((a, b) => b.score - a.score || a.dkAvg - b.dkAvg);
+    const byD = [...scored].sort((a, b) => a.dkAvg - b.dkAvg);
+    const deltaD = byD.length > 1 ? byD[1].dkAvg - byD[0].dkAvg : 999;
+    const fb = checkFallbacks(scored, deltaD, lat, lon);
+    if (fb) return { mode: 'dual', ordered: [scored[0].name, scored[1].name], scores: scored, reason: fb };
+    const top = scored[0];
+    if (top.score < SCORE_CUTOFF) return { mode: 'dual', ordered: [top.name, scored[1].name], scores: scored, reason: 'cutoff' };
+    if (activeIn && top.name !== active) {
+      if (top.score >= CHALLENGER_MIN) return { mode: 'single', ordered: [top.name], scores: scored, reason: 'challenger-win' };
+      return { mode: 'dual', ordered: [active, top.name], scores: scored, reason: 'challenger-hold' }; // 폴백 #7
+    }
+    return { mode: 'single', ordered: [top.name], scores: scored, reason: null };
+  }
+  // 저정밀(coarse) 위치의 오차원 안에 건물이 들어오는 단지 후보 (가까운 순)
+  function coarseCandidates(lat, lon, acc) {
+    return complexNames()
+      .map(name => ({ name, d: complexMinDist(name, lat, lon) }))
+      .filter(c => c.d <= acc)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, COARSE_CHIP_N);
+  }
+
   // latch 표시 목록 확장 (순수 함수)
   // allData: 전체 행 [{id, name, dong, ...}], nearbyItems: latch 직전 화면 행 [{item, d, near}] (거리순 정렬됨),
   // refPos: {lat, lon} | null — nearbyItems가 비었을 때 300m 폴백용
-  // 반환: { rows: [{item, d, near}], names: [apt_name...] }
+  // 반환: { rows: [{item, d, near}], names: [apt_name...], rank: rankComplexes 결과 | null }
   function expandComplex(allData, nearbyItems, refPos) {
-    const seen = new Set(), names = [];
+    const seen = new Set();
+    let names = [];
     const near = (nearbyItems || []).filter(r => r && r.item && r.near);
     near.forEach(r => {
       const n = String(r.item.name || '');
@@ -258,10 +577,16 @@
         }
       });
     }
-    if (names.length === 0) return { rows: [], names: [] };
+    if (names.length === 0) return { rows: [], names: [], rank: null };
+    // 후보 2개 이상: 스코어링으로 1개 확정 또는 상위 2개(dual)로 캡
+    let rank = null;
+    const posOk = refPos && Number.isFinite(refPos.lat) && Number.isFinite(refPos.lon);
+    if (names.length >= 2 && posOk) {
+      rank = rankComplexes(names, refPos.lat, refPos.lon);
+      names = rank.ordered; // dual이어도 최대 2개로 캡
+    }
     // 래치 표시: 단지별 그룹 + 동 번호 오름차순 (101동부터). 가까운 동 거리순 우선은 적용하지 않음.
     const nearById = new Map(near.map(r => [r.item.id, r]));
-    const posOk = refPos && Number.isFinite(refPos.lat) && Number.isFinite(refPos.lon);
     const rows = [];
     names.forEach(n => {
       allData
@@ -272,16 +597,18 @@
           rows.push({ item, d: prev ? prev.d : (posOk ? getDist(item.lat, item.lon, refPos.lat, refPos.lon) : 999999), near: !!prev });
         });
     });
-    return { rows, names };
+    return { rows, names, rank };
   }
 
   // 점프 보류 중 표시: 점프 직전 마지막 신뢰 위치 기준으로 해당 단지 전체 동 표시
   function holdJumpComplex() {
+    if (latch && latch.kind === 'cold') return;  // CP3: 콜드 복원 화면 보호
     if (currentMode !== 'main' || !lastGood) return;
     const exp = expandComplex(allData, lastShown, { lat: lastGood.lat, lon: lastGood.lon });
     latch = exp.names.length > 0
-      ? { items: exp.rows, names: exp.names, since: Date.now(), kind: 'jump' }
-      : { items: lastShown.slice(), names: [], since: Date.now(), kind: 'jump' };
+      ? { items: exp.rows, names: exp.names, since: Date.now(), kind: 'jump', rank: exp.rank || null }
+      : { items: lastShown.slice(), names: [], since: Date.now(), kind: 'jump', rank: null };
+    latchFilter = null;
     refreshDisplay();
   }
 
@@ -291,8 +618,9 @@
     if (!lastShown.some(r => r.near)) return;
     const exp = expandComplex(allData, lastShown, { lat: myLat, lon: myLon });
     latch = exp.names.length > 0
-      ? { items: exp.rows, names: exp.names, since: Date.now(), kind: 'signal' }
-      : { items: lastShown.slice(), names: [], since: Date.now(), kind: 'signal' };
+      ? { items: exp.rows, names: exp.names, since: Date.now(), kind: 'signal', rank: exp.rank || null }
+      : { items: lastShown.slice(), names: [], since: Date.now(), kind: 'signal', rank: null };
+    latchFilter = null;
     refreshDisplay();
   }
 
@@ -416,6 +744,7 @@
 
   function onDataChanged() {
     dataVer++; prefetch.clear(); lastRender = null;
+    if (coldView && coldView.needData) coldChecked = false;  // 데이터 로드 후 콜드 판정 재시도
     refreshDisplay();
   }
   
@@ -645,39 +974,180 @@
     }
   }
 
+  // ===== 콜드스타트: GPS 미확보 상태에서 저장 단지 복원 / 단지 선택 =====
+  function coldBootCheck() {
+    coldChecked = true;
+    if (!allData || allData.length === 0) { coldView = { type: 'hybrid', coarsePending: false, needData: true }; return; }
+    coldView = { type: 'hybrid', coarsePending: true, coarseCands: [] };
+    const saved = getSavedComplex();
+    coldSaved = (saved && !coldDismissed && (Date.now() - saved.t) <= COLD_ZONE_MS) ? saved : null;
+    if (navigator.geolocation) {
+      try {
+        navigator.geolocation.getCurrentPosition(onColdCoarseOk, onColdCoarseErr,
+          { enableHighAccuracy: false, timeout: COARSE_TIMEOUT_MS, maximumAge: 60000 });
+        return;
+      } catch (e) {}
+    }
+    onColdCoarseErr();
+  }
+  function onColdCoarseOk(p) {
+    if (latch || (Number.isFinite(myLat) && Number.isFinite(myLon))) return; // 이미 복원됐거나 실측 위치 확보
+    const c = p.coords;
+    const lat = c.latitude, lon = c.longitude;
+    const acc = Number.isFinite(c.accuracy) ? c.accuracy : 999;
+    coldView = coldView || { type: 'hybrid' };
+    coldView.coarsePending = false;
+    if (Number.isFinite(lat) && Number.isFinite(lon) && acc <= COARSE_MAX_ACC) {
+      coldView.coarseCands = coarseCandidates(lat, lon, acc);
+      // 박동민 필수 요구: coarse가 저장 위치 300m 밖이면 복원 금지
+      if (coldSaved && currentMode === 'main' && distM(lat, lon, coldSaved.lat, coldSaved.lon) <= COARSE_GATE_M) {
+        doColdRestore(coldSaved.name, coldSaved.t);
+        return;
+      }
+    }
+    coldView.type = 'hybrid';
+    refreshDisplay();
+  }
+  function onColdCoarseErr() {
+    if (latch || (Number.isFinite(myLat) && Number.isFinite(myLon))) return;
+    coldView = coldView || { type: 'hybrid' };
+    coldView.coarsePending = false;
+    if (coldSaved && currentMode === 'main') {
+      coldView.type = 'confirm'; coldView.name = coldSaved.name; coldView.t = coldSaved.t;
+    } else coldView.type = 'hybrid';
+    refreshDisplay();
+  }
+  function doColdRestore(name, savedT) {
+    if (coldDismissed || currentMode !== 'main' || !name) return;
+    const saved = getSavedComplex();
+    const rl = (saved && saved.name === name) ? saved : null;
+    const rows = complexItems(name).sort(cmpDong).map(item => {
+      const d = rl ? getDist(item.lat, item.lon, rl.lat, rl.lon) : 999999;
+      return { item, d, near: d <= searchRadius };
+    });
+    if (!rows.length) return;
+    latch = { items: rows, names: [name], since: Date.now(), kind: 'cold', savedT: savedT || Date.now(), rank: null };
+    latchFilter = null; coldView = null; coldAnchor = null; coldGoodStreak = 0;
+    lastRender = null;
+    refreshDisplay();
+  }
+  function doColdRestoreConfirm() { if (coldView && coldView.name) doColdRestore(coldView.name, coldView.t); }
+  function closeColdRestore(e) { if (e && e.stopPropagation) e.stopPropagation(); coldDismissed = true; releaseLatch(true); }
+  function coldDecline() { coldDismissed = true; coldView = { type: 'hybrid', coarsePending: false, coarseCands: [] }; refreshDisplay(); }
+
+  // 칩/검색/전체 목록에서 단지 선택 시 해당 단지 전체 동 표시
+  function showComplexRows(name) {
+    const rows = complexItems(name).sort(cmpDong).map(item => ({ item, d: 999999, near: false }));
+    if (!rows.length) return;
+    latch = { items: rows, names: [name], since: Date.now(), kind: 'pick', rank: null };
+    latchFilter = null; coldView = null; lastRender = null;
+    refreshDisplay();
+  }
+  function pickRecent(i) { const r = coldRecentList[i]; if (r) showComplexRows(r.name); }
+  function pickCoarse(i) { const c = coldCoarseList[i]; if (c) showComplexRows(c.name); }
+  function pickSearch(i) { const n = coldSearchList[i]; if (n) showComplexRows(n); }
+  function pickComplexByIdx(i) { const n = coldNameList[i]; if (n) showComplexRows(n); }
+  function shortAddr(a) { const m = String(a || '').match(/([가-힣0-9]+(동|리|읍|면))/); return m ? m[1] : ''; }
+  function coldSearch(q) {
+    const res = document.getElementById('cold-search-res');
+    if (!res) return;
+    const nq = String(q || '').toLowerCase().replace(/\s+/g, '');
+    if (!nq) { res.innerHTML = ''; coldSearchList = []; return; }
+    coldSearchList = complexNames().filter(n => n.toLowerCase().replace(/\s+/g, '').includes(nq)).slice(0, 8);
+    res.innerHTML = coldSearchList.map((n, i) => `<button class="chip" onclick="pickSearch(${i})">${esc(n)}</button>`).join('');
+  }
+  function renderColdView(container) {
+    const v = coldView || { type: 'hybrid' };
+    const prevQ = (document.getElementById('cold-search') || {}).value || '';  // 재렌더 시 입력 중인 검색어 유지
+    let html = '';
+    if (v.type === 'confirm' && v.name) {
+      html += `<div class="cold-card"><div style="color:#999; font-size:13px;">🕘 ${fmtAgo(Date.now() - v.t)} 위치</div>` +
+        `<div style="font-size:1.2em; font-weight:bold; color:var(--accent); margin:8px 0 12px;">${esc(v.name)}</div>` +
+        `<button class="snack-ok" style="padding:10px 18px; border:none; border-radius:8px; font-weight:bold; margin:0 4px; cursor:pointer;" onclick="doColdRestoreConfirm()">전체 동 보기</button>` +
+        `<button class="snack-no" style="padding:10px 18px; border:none; border-radius:8px; font-weight:bold; margin:0 4px; cursor:pointer;" onclick="coldDecline()">아니요</button></div>`;
+    }
+    html += `<div class="cold-status">${v.coarsePending ? '📡 위치 확인 중...' : '📡 GPS 신호 없음 — 아래에서 단지를 선택하세요'}</div>`;
+    coldCoarseList = (v.coarseCands || []).slice();
+    if (coldCoarseList.length) {
+      html += `<div class="cold-sec">내 주변 후보 단지</div><div class="chip-row">` +
+        coldCoarseList.map((c, i) => `<button class="chip" onclick="pickCoarse(${i})">${esc(c.name)} <small>약 ${Math.round(c.d)}m</small></button>`).join('') + `</div>`;
+    }
+    coldRecentList = getRecents().slice(0, RECENT_CHIP_N);
+    if (coldRecentList.length) {
+      html += `<div class="cold-sec">최근 방문 단지</div><div class="chip-row">` +
+        coldRecentList.map((r, i) => { const sa = shortAddr(r.addr); return `<button class="chip" onclick="pickRecent(${i})">${esc(r.name)}${sa ? ` <small>(${esc(sa)})</small>` : ''}</button>`; }).join('') + `</div>`;
+    }
+    html += `<div class="cold-sec">단지 검색</div><input type="text" id="cold-search" placeholder="단지명 입력" autocomplete="off" value="${esc(prevQ)}" oninput="coldSearch(this.value)"><div id="cold-search-res" class="chip-row" style="margin-top:6px;"></div>`;
+    coldNameList = complexNames().sort((a, b) => a.localeCompare(b, 'ko'));
+    html += `<div class="cold-sec">전체 단지 (${coldNameList.length})</div><div class="chip-row">` +
+      coldNameList.map((n, i) => `<button class="chip" onclick="pickComplexByIdx(${i})">${esc(n)}</button>`).join('') + `</div>`;
+    container.innerHTML = html;
+    if (prevQ) coldSearch(prevQ);
+    lastRender = { cold: true }; lastShown = [];
+    updateStatus();
+  }
+
+  // 래치 표시: 콜드/선택/dual(상위 2개 단지)/일반 배지 + 단지 필터
+  function renderLatchView(container) {
+    if (lastRender && lastRender.latch === latch && lastRender.latchFilter === latchFilter) return;
+    const now = Date.now();
+    const rank = latch.rank;
+    const dual = !!(rank && rank.mode === 'dual' && rank.ordered && rank.ordered.length >= 2);
+    let badge;
+    if (latch.kind === 'cold') {
+      badge = `<div class="latch-badge"><span id="cold-badge-txt">🕘 ${fmtAgo(now - (latch.savedT || latch.since))} 위치 기준 — 현위치 아님</span> <span class="cold-x" onclick="closeColdRestore(event)">✕</span></div>`;
+    } else if (latch.kind === 'pick') {
+      badge = `<div class="latch-badge" onclick="releaseLatch(true)">📍 ${esc(latch.names[0] || '')} 전체 동 (터치 시 해제)</div>`;
+    } else if (dual) {
+      badge = `<div class="latch-badge" onclick="releaseLatch(true)">📡 신호 미약 — 인접 2개 단지 동시 표시 (터치 시 해제)</div>`;
+    } else if (latch.names && latch.names.length > 0) {
+      const t = latch.names.length > 1 ? '인근 단지 전체 동' : latch.names[0] + ' 전체 동';
+      const prefix = latch.kind === 'jump' ? '📡 위치 튐 감지 — ' : '📡 신호 끊김 — ';
+      badge = `<div class="latch-badge" onclick="releaseLatch(true)">${prefix}${esc(t)}</div>`;
+    } else if (latch.kind === 'jump') {
+      badge = `<div class="latch-badge" onclick="releaseLatch(true)">📡 위치 튐 감지 — 확인 중 (터치 시 해제)</div>`;
+    } else {
+      badge = `<div class="latch-badge" onclick="releaseLatch(true)">[지하 진입 인식] 고정 중 (터치 시 해제)</div>`;
+    }
+    let chips = '';
+    if (dual) {
+      chips = `<div class="fchip-row"><button class="fchip${latchFilter == null ? ' active' : ''}" onclick="setLatchFilter(-1)">전체</button>` +
+        rank.ordered.map((n, i) => `<button class="fchip${latchFilter === n ? ' active' : ''}" onclick="setLatchFilter(${i})">${esc(n)}</button>`).join('') + `</div>`;
+    }
+    let items = latch.items;
+    if (latchFilter != null) items = items.filter(r => String(r.item.name) === latchFilter);
+    let html = badge + chips, curSec = null;
+    items.forEach(r => {
+      const n = String(r.item.name);
+      if (dual && latchFilter == null && n !== curSec) {
+        curSec = n;
+        html += `<div class="rank-sec">${rank.ordered.indexOf(n) === 0 ? '🥇 1순위' : '🥈 2순위'} · ${esc(n)}</div>`;
+      }
+      html += cardHtml(r, false);
+    });
+    container.innerHTML = html;
+    lastRender = { latch, latchFilter };
+  }
+  function setLatchFilter(i) {
+    latchFilter = (i < 0 || !latch || !latch.rank) ? null : (latch.rank.ordered[i] || null);
+    lastRender = null;
+    refreshDisplay();
+  }
+
   // 운행 모드 렌더링: 거리 1회 계산 → 이탈 지연 필터 → 정렬 → (변화 없으면) 렌더 생략
   function renderMain(container) {
-    if (latch) {
-      if (lastRender && lastRender.latch === latch) return;
-      let badge;
-      if (latch.names && latch.names.length > 0) {
-        const t = latch.names.length > 1 ? '인근 단지 전체 동' : latch.names[0] + ' 전체 동';
-        const prefix = latch.kind === 'jump' ? '📡 위치 튐 감지 — ' : '📡 신호 끊김 — ';
-        badge = `<div class="latch-badge" onclick="releaseLatch(true)">${prefix}${esc(t)}</div>`;
-      } else if (latch.kind === 'jump') {
-        badge = `<div class="latch-badge" onclick="releaseLatch(true)">📡 위치 튐 감지 — 확인 중 (터치 시 해제)</div>`;
-      } else {
-        badge = `<div class="latch-badge" onclick="releaseLatch(true)">[지하 진입 인식] 고정 중 (터치 시 해제)</div>`;
-      }
-      container.innerHTML = badge + latch.items.map(r => cardHtml(r, false)).join('');
-      lastRender = { latch };
-      return;
-    }
-
     const hasFix = Number.isFinite(myLat) && Number.isFinite(myLon);
     if (!isGpsReady && !hasFix) {
       container.innerHTML = `<div id="loading-msg" style="color:#555; text-align:center; margin-top:80px;">📍 현재 위치를 확인 중입니다...</div>`;
       lastRender = null;
       return;
     }
+    if (!hasFix && !coldChecked) coldBootCheck();
+    if (latch) { renderLatchView(container); return; }
+    if (!hasFix && coldView) { renderColdView(container); return; }
     const ref = hasFix ? { lat: myLat, lon: myLon } : getSavedPos();
     usingSavedPos = hasFix ? null : ref;
-    if (!ref) {
-      container.innerHTML = `<div style="color:#555; text-align:center; margin-top:80px; line-height:1.6;">📡 GPS 대기 중 — 검색 모드를 이용하세요</div>`;
-      lastRender = null; lastShown = [];
-      updateStatus();
-      return;
-    }
+    if (!ref) { coldView = coldView || { type: 'hybrid', coarsePending: false, coarseCands: [] }; renderColdView(container); return; }
 
     const now = Date.now();
     const exitR = searchRadius + Math.max(HYST_MIN_M, hasFix && Number.isFinite(myAcc) ? myAcc : 0);

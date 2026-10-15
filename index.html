@@ -73,6 +73,10 @@
     .chip small { color:#999; font-size:11px; }
     .cold-x { color:var(--common); font-weight:bold; padding:0 8px; cursor:pointer; }
     #cold-search { display:block; width:100%; }
+    .voice-heard { color:#fff; font-size:20px; text-align:center; margin:14px 0 8px; word-break:keep-all; }
+    .voice-heard b { color:var(--accent); }
+    .voice-nomatch { color:#555; text-align:center; margin-bottom:6px; }
+    .voice-all-row { margin-top:10px; }
     .row-btn { width: 45px; height: 45px; border-radius: 10px; border: 1.5px solid #444; background: #333; color: white; font-weight: bold; font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   </style>
 </head>
@@ -184,6 +188,20 @@
   const SNACK_MS = 5000;                   // 실측 튜닝 전 잠정치 — 스낵바 자동 소멸
   const COLD_EXIT_STREAK = 3, COLD_EXIT_MOVE_M = 30; // 실측 튜닝 전 잠정치 — 지상 탈출 판정
   const RECENT_MAX = 10, RECENT_CHIP_N = 5; // 실측 튜닝 전 잠정치
+  // ===== 음성 검색 정확도 (P1~P5, P8) — 전부 실측 튜닝 전 잠정치 =====
+  const VOICE_TRAILING_WORDS = ['찾아줘','알려줘','검색해줘','보여줘','어디야','어딘지','비밀번호','비번','알려주세요','찾아주세요','보여주세요','주세요']
+    .sort((a, b) => b.length - a.length);  // P1: 문미 불용어 (긴 것 우선 제거)
+  const VOICE_MAX_ALTS = 5;                 // P2: n-best 후보 수
+  const VOICE_CONF_BASE = 0.7, VOICE_CONF_W = 0.3; // P2: score * (0.7 + 0.3 * confidence)
+  const VOICE_RANK_DECAY = [1.0, 0.85, 0.7, 0.55, 0.4]; // P2: confidence 없을 때 순위 감쇄
+  const JAMO_SUB_COST = { 'ㅂㅍ': 0.3, 'ㄷㅌ': 0.3, 'ㄱㅋ': 0.3, 'ㅈㅊ': 0.3, 'ㅐㅔ': 0.2, 'ㄱㅇ': 0.3 }; // P3: 혼동 자모쌍 치환 비용 (키=정렬 후 join)
+  const GPS_BONUS_NEAR = 25, GPS_BONUS_MID = 15, GPS_BONUS_FAR = 5;  // P4: 300m / 800m / 1500m 이내 가산
+  const GPS_BONUS_NEAR_M = 300, GPS_BONUS_MID_M = 800, GPS_BONUS_FAR_M = 1500;
+  const GPS_BONUS_MAX_ACC = 80;             // P4: 이 정확도(m) 이하일 때만 가산
+  const VOICE_SUGGEST_N = 3, VOICE_ALT_CHIP_N = 2; // P5: 유사 단지 추천 칩 수 / n-best 차순위 칩 수
+  const VOICE_CAND_N = 5;                   // P8: 인식 후보 칩 수
+  const VOICE_CLEAR_SCORE = 50, VOICE_CLEAR_GAP = 8; // P8: 명확성 게이트 (1위 점수 / 1-2위 격차)
+  const EXACT_MATCH_SCORE = 60;             // 정확일치 분기 고정 점수 (P2/P8 비교용)
   let lastGood = null, pendingJump = null;       // lastGood = {lat, lon, acc, t}
   let usingSavedPos = null;                      // GPS 미확보 시 사용 중인 저장 위치
   let latch = null, latchSuppressed = false;     // 지하 진입 고정 상태
@@ -197,6 +215,9 @@
   let snackTimer = null, snackName = null, snackMutedFor = null;
   let latchFilter = null;
   let coldNameList = [], coldRecentList = [], coldSearchList = [], coldWpsList = [];
+  let voiceQuery = null;           // P5: 음성 확정 검색어 {text, alts} — refreshDisplay에서 1회 소비
+  let voiceView = null;            // 음성 전용 화면(무매칭/후보) {text, html} — 입력값이 그대로인 동안 GPS 재렌더에도 유지
+  let voiceCandList = [], voiceSuggestList = [];
 
   window.onload = () => {
     const savedRad = localStorage.getItem('aptSearchRadius');
@@ -757,6 +778,7 @@
 
   function onDataChanged() {
     dataVer++; prefetch.clear(); lastRender = null;
+    prewarmJamo();   // P3: 오타 보정용 자모 분해 사전 캐싱
     if (coldView && coldView.needData) coldChecked = false;  // 데이터 로드 후 콜드 판정 재시도
     refreshDisplay();
   }
@@ -772,7 +794,7 @@
     refreshDisplay();
     updateStatus();
   }
-  
+
   function levenshtein(a, b) {
     let m = [], i, j, min = Math.min;
     if (!(a && b)) return (b || a).length;
@@ -796,6 +818,166 @@
       out += (c >= 0 && c < 11172) ? CHOSUNG[Math.floor(c / 588)] : s[i];
     }
     return out;
+  }
+
+  // ===== P3: 자모 단위 가중 편집거리 (순수 함수) =====
+  const JUNGSUNG = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
+  const JONGSUNG = ['', 'ㄱ','ㄲ','ㄳ','ㄴ','ㄵ','ㄶ','ㄷ','ㄹ','ㄺ','ㄻ','ㄼ','ㄽ','ㄾ','ㄿ','ㅀ','ㅁ','ㅂ','ㅄ','ㅅ','ㅆ','ㅇ','ㅈ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+  // 한글 음절 → [초성, 중성, 종성('' 가능)], 그 외 문자 → [문자]
+  function decomposeJamo(ch) {
+    const s = String(ch), c = s.charCodeAt(0) - 44032;
+    if (!(c >= 0 && c < 11172)) return [s];
+    return [CHOSUNG[Math.floor(c / 588)], JUNGSUNG[Math.floor((c % 588) / 28)], JONGSUNG[c % 28]];
+  }
+  // 자모 치환 비용: 같으면 0, 혼동쌍(JAMO_SUB_COST)은 할인, 빈 종성('')이 끼면 1
+  function jamoSubCost(a, b) {
+    if (a === b) return 0;
+    if (!a || !b) return 1;
+    const k = [a, b].sort().join('');
+    return Object.prototype.hasOwnProperty.call(JAMO_SUB_COST, k) ? JAMO_SUB_COST[k] : 1;
+  }
+  // 자모 배열 간 편집거리: 치환만 가중, 삽입/삭제 1
+  function levenshteinWeighted(a, b) {
+    if (!a.length) return b.length;
+    if (!b.length) return a.length;
+    let prev = new Array(b.length + 1), cur = new Array(b.length + 1);
+    for (let j = 0; j <= b.length; j++) prev[j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      cur[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        cur[j] = Math.min(prev[j - 1] + jamoSubCost(a[i - 1], b[j - 1]), prev[j] + 1, cur[j - 1] + 1);
+      }
+      [prev, cur] = [cur, prev];
+    }
+    return prev[b.length];
+  }
+  // 문자열 → {flat: 자모 배열, off: 글자 i의 flat 시작 인덱스} (off.length = 글자수+1)
+  function buildJamoSeq(s) {
+    const flat = [], off = [0];
+    for (let i = 0; i < s.length; i++) { decomposeJamo(s[i]).forEach(j => flat.push(j)); off.push(flat.length); }
+    return { flat, off };
+  }
+  // 글자 [start, start+len) 구간의 자모 배열
+  function jamoSlice(seq, start, len) { return seq.flat.slice(seq.off[start], seq.off[start + len]); }
+  const jamoCache = new Map();   // DB 문자열 → buildJamoSeq 결과 (데이터 로드 시 prewarmJamo로 사전 계산)
+  function jamoSeq(s) {
+    let r = jamoCache.get(s);
+    if (!r) { r = buildJamoSeq(s); jamoCache.set(s, r); }
+    return r;
+  }
+  // getMatchScore 4단계가 비교하는 DB 측 문자열 (사전 캐싱과 공용)
+  function matchLetterStrings(item) {
+    const itemName = String(item.name || ''), itemDong = String(item.dong || '');
+    return {
+      targetLetters: (itemName + itemDong).toLowerCase().replace(/\s+/g, "").replace(/\d+/g, "").replace(/(단지|차)/g, ""),
+      words: (itemName + ' ' + itemDong).toLowerCase().split(/\s+/).map(w => w.replace(/\d+/g, "").replace(/(단지|차)/g, "")),
+    };
+  }
+  function prewarmJamo() {
+    jamoCache.clear();
+    (allData || []).forEach(i => { const m = matchLetterStrings(i); jamoSeq(m.targetLetters); m.words.forEach(w => jamoSeq(w)); });
+  }
+
+  // ===== P1: 음성 검색어 정규화 (순수 함수, 음성 경로 전용) =====
+  const NATIVE_DIGIT = { '일': 1, '이': 2, '삼': 3, '사': 4, '오': 5, '육': 6, '칠': 7, '팔': 8, '구': 9 };
+  const NATIVE_UNIT = { '십': 10, '백': 100, '천': 1000 };
+  // 한글 수사 → 숫자: "백일"=101, "이"=2, "삼백"=300, "천이백삼십사"=1234. 수사 외 문자가 있으면 NaN
+  function nativeToArabic(s) {
+    let total = 0, cur = 0;
+    for (const ch of String(s)) {
+      if (NATIVE_DIGIT[ch]) cur = NATIVE_DIGIT[ch];
+      else if (NATIVE_UNIT[ch]) { total += (cur || 1) * NATIVE_UNIT[ch]; cur = 0; }
+      else return NaN;
+    }
+    return total + cur;
+  }
+  // 정상 수사인지: 숫자 연속 금지, 단위는 내림차순 ("구이"·"일이"는 비정상)
+  function isWellFormedNumeral(s) {
+    let prevDigit = false, lastUnit = Infinity;
+    for (const ch of s) {
+      if (NATIVE_DIGIT[ch]) { if (prevDigit) return false; prevDigit = true; }
+      else if (NATIVE_UNIT[ch]) { if (NATIVE_UNIT[ch] >= lastUnit) return false; lastUnit = NATIVE_UNIT[ch]; prevDigit = false; }
+      else return false;
+    }
+    return s.length > 0;
+  }
+  // 수사 연속부 중 가장 긴 정상 접미부만 변환 ("청구이차"의 "구이" → "구2")
+  function convertNumeralRun(run) {
+    for (let k = 0; k < run.length; k++) {
+      const tail = run.slice(k);
+      if (isWellFormedNumeral(tail)) return run.slice(0, k) + nativeToArabic(tail);
+    }
+    return run;
+  }
+  function normalizeVoiceQuery(q) {
+    let s = String(q || '').replace(/[.?!,]+/g, ' ').replace(/\s+/g, ' ').trim();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const w of VOICE_TRAILING_WORDS) {
+        if (s.length > w.length && s.endsWith(w)) { s = s.slice(0, -w.length).trim(); changed = true; break; }
+      }
+    }
+    return s.replace(/(일|이|삼|사|오|육|칠|팔|구|십|백|천)+(?=동|차|단지|호)/g, convertNumeralRun);
+  }
+
+  // ===== P2/P8: n-best 결합·후보 판정 (순수 함수) =====
+  function voiceCombinedScore(score, confidence, rank) {
+    if (Number.isFinite(confidence) && confidence > 0) return score * (VOICE_CONF_BASE + VOICE_CONF_W * confidence);
+    return score * VOICE_RANK_DECAY[Math.min(rank, VOICE_RANK_DECAY.length - 1)];
+  }
+  // SpeechRecognitionResultList(유사 배열) → [{transcript, confidence, rank}] (확정 세그먼트만)
+  function collectVoiceAlts(results) {
+    const segs = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (!r || !r.isFinal) continue;
+      const alts = [];
+      for (let j = 0; j < Math.min(r.length, VOICE_MAX_ALTS); j++) alts.push({ transcript: String(r[j].transcript || ''), confidence: r[j].confidence, rank: j });
+      if (alts.length) segs.push(alts);
+    }
+    if (segs.length <= 1) return segs[0] || [];
+    // 다중 세그먼트: 각 세그먼트 1순위 연결(기존 동작)을 0순위로, 한 세그먼트만 대안으로 바꾼 문자열을 그 대안 순위로
+    const top = segs.map(s => s[0].transcript);
+    const out = [{ transcript: top.join(''), confidence: Math.min(...segs.map(s => s[0].confidence || 0)), rank: 0 }];
+    segs.forEach((s, k) => s.slice(1).forEach(a => {
+      out.push({ transcript: top.map((t, x) => x === k ? a.transcript : t).join(''), confidence: a.confidence, rank: a.rank });
+    }));
+    return out;
+  }
+  // 대안별 정규화 → 검색 → 결합 점수 내림차순 (동점은 원래 순서 유지). searchFn: searchItemsWithScores
+  function rankVoiceAlts(alts, searchFn) {
+    const seen = new Set(), out = [];
+    alts.forEach((a, idx) => {
+      const text = normalizeVoiceQuery(a.transcript);
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      const scored = searchFn(text);
+      const top = scored.length ? scored[0] : null;
+      out.push({ text, idx, rank: a.rank, confidence: a.confidence, scored, top, combined: top ? voiceCombinedScore(top.score, a.confidence, a.rank) : 0 });
+    });
+    return out.sort((x, y) => (y.combined - x.combined) || (x.idx - y.idx));
+  }
+  // [{item, score}] (점수순) → 단지명 중복 제거 [{name, score, addr}] 상위 n
+  function topComplexes(scored, n) {
+    const seen = new Set(), out = [];
+    for (const s of scored) {
+      const name = String(s.item.name || '');
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, score: s.score, addr: String(s.item.addr || '') });
+      if (out.length >= n) break;
+    }
+    return out;
+  }
+  // 'expand' = 바로 펼침, 'candidates' = 후보 선택 UI, 'none' = 매칭 없음(P5 폴백)
+  function decideVoiceAction(cands) {
+    if (!cands || !cands.length) return 'none';
+    const t1 = cands[0], t2 = cands[1];
+    if (t1.score >= VOICE_CLEAR_SCORE && (!t2 || t1.score - t2.score >= VOICE_CLEAR_GAP)) return 'expand';
+    return 'candidates';
+  }
+  function gpsBonusFor(d) {
+    return d <= GPS_BONUS_NEAR_M ? GPS_BONUS_NEAR : d <= GPS_BONUS_MID_M ? GPS_BONUS_MID : d <= GPS_BONUS_FAR_M ? GPS_BONUS_FAR : 0;
   }
 
   // [2단계] 토큰 순서 매칭: "펜타 한신 2차" → "펜타시티 한신더휴 2차" (중간 단어 생략 허용)
@@ -824,7 +1006,6 @@
   function getMatchScore(query, item) {
     const itemName = String(item.name || '');
     const itemDong = String(item.dong || '');
-    const nameDongStr = (itemName + itemDong).toLowerCase().replace(/\s+/g, "");
     const targetStr = (itemName + itemDong + String(item.addr || '')).toLowerCase().replace(/\s+/g, "");
     const nameStr = itemName.toLowerCase().replace(/\s+/g, "");
 
@@ -851,22 +1032,25 @@
     const len = queryLetters.length;
     const maxErr = len <= 3 ? 1 : 2;
     let bestDist = 999;
+    // P3: 거리 = min(음절 거리, 자모 가중 거리) — 기존 음절 거리로 통과하던 매칭은 그대로 통과(텍스트 검색 보존),
+    // 혼동 자모(ㅂ/ㅍ, ㅐ/ㅔ, 받침 ㅇ/ㄱ 등)만 추가 할인. 자모 거리 단독으로는 음절 누락("펜타대박"↔"펜타시티" 2→5)을 탈락시킴
+    const qJamo = buildJamoSeq(queryLetters).flat;
+    const ml = matchLetterStrings(item);
 
     if (len <= 2) {
       // 짧은 쿼리는 단어 시작 위치에서만 매칭 ("대박"→"대방" O, "대박"→"현대아이파크 속 대아" X)
-      const words = (itemName + ' ' + itemDong).toLowerCase().split(/\s+/)
-        .map(w => w.replace(/\d+/g, "").replace(/(단지|차)/g, ""))
-        .filter(w => w.length >= len);
+      const words = ml.words.filter(w => w.length >= len);
       for (const w of words) {
-        const dist = levenshtein(queryLetters, w.substr(0, len));
+        const dist = Math.min(levenshtein(queryLetters, w.substr(0, len)), levenshteinWeighted(qJamo, jamoSlice(jamoSeq(w), 0, len)));
         if (dist < bestDist) bestDist = dist;
       }
     } else {
       // 이름+동 안에서만 매칭 (주소는 제외 — 주소 오타 매칭이 쓰레기 결과의 주범)
-      const targetLetters = nameDongStr.replace(/\d+/g, "").replace(/(단지|차)/g, "");
+      const targetLetters = ml.targetLetters;
       if (len <= targetLetters.length) {
+        const tSeq = jamoSeq(targetLetters);
         for (let i = 0; i <= targetLetters.length - len; i++) {
-          const dist = levenshtein(queryLetters, targetLetters.substr(i, len));
+          const dist = Math.min(levenshtein(queryLetters, targetLetters.substr(i, len)), levenshteinWeighted(qJamo, jamoSlice(tSeq, i, len)));
           if (dist < bestDist) bestDist = dist;
         }
       }
@@ -893,7 +1077,7 @@
     if (recListening) { try { rec.stop(); } catch (e) {} setMicListening(false); return; }
     const input = document.getElementById('search-input');
     rec = new SR();
-    rec.lang = 'ko-KR'; rec.interimResults = true; rec.maxAlternatives = 1;
+    rec.lang = 'ko-KR'; rec.interimResults = true; rec.maxAlternatives = VOICE_MAX_ALTS;
     rec.onresult = (ev) => {
       let finalT = '', interim = '';
       for (let i = 0; i < ev.results.length; i++) {
@@ -901,10 +1085,7 @@
         else interim += ev.results[i][0].transcript;
       }
       input.value = finalT + interim;
-      if (!interim && finalT) {
-        input.value = finalT.trim();
-        input.focus(); refreshDisplay();
-      }
+      if (!interim && finalT) handleVoiceFinal(input, ev.results, finalT);
     };
     rec.onerror = (e) => {
       setMicListening(false);
@@ -918,6 +1099,84 @@
   }
   document.getElementById('mic-btn').addEventListener('click', toggleVoice);
 
+  // 음성 확정: P1 정규화 → P2 n-best 결합 → P8 명확성 게이트 (expand / candidates / none→P5)
+  function handleVoiceFinal(input, results, finalT) {
+    const ranked = currentMode === 'manage' ? rankVoiceAlts(collectVoiceAlts(results), searchItemsWithScores) : [];
+    if (!ranked.length) { input.value = finalT.trim(); input.focus(); refreshDisplay(); return; }  // 기존 흐름
+    const best = ranked[0];
+    input.value = best.text;
+    voiceView = null;
+    const cands = topComplexes(best.scored, VOICE_CAND_N);
+    if (decideVoiceAction(cands) === 'candidates') {
+      voiceQuery = null;
+      renderVoiceCandidates(document.getElementById('list-container'), best.text, cands);
+      return;
+    }
+    voiceQuery = { text: best.text, alts: ranked.slice(1).filter(r => r.top).map(r => ({ text: r.text, name: String(r.top.item.name || '') })) };
+    input.focus(); refreshDisplay();
+  }
+
+  function voiceHeardHtml(text) { return `<div class="voice-heard">들은 내용: <b>${esc(text)}</b></div>`; }
+
+  // P8: 인식 후보 선택 UI — 칩 선택 시 해당 단지 전체 동 (운행 모드 단지 선택 화면, 동 오름차순)
+  function renderVoiceCandidates(container, text, cands) {
+    voiceCandList = cands.map(c => c.name);
+    const html = voiceHeardHtml(text) +
+      `<div class="cold-sec">🗣️ 인식 후보 — 단지를 선택하세요</div><div class="chip-row">` +
+      cands.map((c, i) => { const sa = shortAddr(c.addr); return `<button class="chip" onclick="pickVoiceCand(${i})">${esc(c.name)}${sa ? ` <small>(${esc(sa)})</small>` : ''}</button>`; }).join('') +
+      `</div><div class="chip-row voice-all-row"><button class="chip" onclick="showVoiceAllResults()">검색 결과 전체 보기</button></div>`;
+    voiceView = { text, html };
+    lastRender = null;
+    container.innerHTML = html;
+  }
+  function pickVoiceCand(i) {
+    const name = voiceCandList[i];
+    if (!name) return;
+    voiceView = null; voiceQuery = null;
+    if (currentMode !== 'main') switchMode('main');   // 단지 전체 동 화면은 운행 모드 래치 뷰
+    showComplexRows(name);
+  }
+  function showVoiceAllResults() { voiceView = null; voiceQuery = null; refreshDisplay(); }
+
+  // P5: 음성 무매칭 폴백 — 들은 내용 + 초성 유사 단지 + n-best 차순위
+  function voiceChosungSuggest(text, n) {
+    const qs = [];
+    const full = getChosung(String(text).replace(/\s+/g, '')).replace(/[^ㄱ-ㅎ]/g, '');
+    if (full.length >= 2) qs.push(full);
+    String(text).split(/\s+/).forEach(t => { const c = getChosung(t).replace(/[^ㄱ-ㅎ]/g, ''); if (c.length >= 2 && !qs.includes(c)) qs.push(c); });
+    const out = [];
+    for (const q of qs) {
+      const hits = (allData || []).map(i => ({ item: i, score: chosungScore(q, i) })).filter(h => h.score > 0)
+        .sort((a, b) => (b.score - a.score) || String(a.item.name).localeCompare(String(b.item.name)));
+      for (const h of hits) {
+        const name = String(h.item.name || '');
+        if (name && !out.includes(name)) out.push(name);
+        if (out.length >= n) return out;
+      }
+    }
+    return out;
+  }
+  function renderVoiceNoMatch(container, vq) {
+    const sugg = voiceChosungSuggest(vq.text, VOICE_SUGGEST_N);
+    const altNames = [];
+    (vq.alts || []).forEach(a => { if (a.name && !sugg.includes(a.name) && !altNames.includes(a.name)) altNames.push(a.name); });
+    const alts = altNames.slice(0, VOICE_ALT_CHIP_N);
+    voiceSuggestList = sugg.concat(alts);
+    let html = voiceHeardHtml(vq.text) + `<div class="voice-nomatch">검색 결과가 없습니다.</div>`;
+    if (sugg.length) html += `<div class="cold-sec">유사 단지 추천</div><div class="chip-row">` +
+      sugg.map((n, i) => `<button class="chip" onclick="pickVoiceSuggest(${i})">${esc(n)}</button>`).join('') + `</div>`;
+    if (alts.length) html += `<div class="cold-sec">다른 인식 결과</div><div class="chip-row">` +
+      alts.map((n, i) => `<button class="chip" onclick="pickVoiceSuggest(${sugg.length + i})">혹시 '${esc(n)}'인가요?</button>`).join('') + `</div>`;
+    voiceView = { text: vq.text, html };
+    container.innerHTML = html;
+  }
+  function pickVoiceSuggest(i) { const n = voiceSuggestList[i]; if (n) pickVoiceName(n); }
+  function pickVoiceName(name) {
+    document.getElementById('search-input').value = name;
+    voiceQuery = null; voiceView = null;
+    refreshDisplay();
+  }
+
   // PWA 홈 화면 설치
   let deferredPrompt = null;
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; });
@@ -928,7 +1187,8 @@
   if (window.matchMedia('(display-mode: standalone)').matches) { document.getElementById('install-btn').style.display = 'none'; }
 
   // 검색 엔진 (메인 검색·콜드 검색 공용). rawQuery: 입력 원문. 반환: 매칭 행 배열 (순위순)
-  function searchItems(rawQuery) {
+  // 반환: [{item, score}] (순위순). score는 P4 GPS 근접 가산 포함
+  function searchItemsWithScores(rawQuery) {
     const searchVal = String(rawQuery || '').toLowerCase().replace(/\s+/g, "");
     if (!searchVal) return [];
     // [1단계 필터] 검색어와 100% 완벽하게 일치하는 데이터 먼저 탐색
@@ -938,28 +1198,33 @@
     });
 
     if (exactMatches.length > 0) {
-      // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단
-      return exactMatches.sort((a,b) => a.name.localeCompare(b.name));
+      // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단 (GPS 가산 없음)
+      return exactMatches.sort((a,b) => a.name.localeCompare(b.name)).map(i => ({ item: i, score: EXACT_MATCH_SCORE }));
     }
-    // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정
+    // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정 (앞 단계 결과가 있으면 뒤 단계는 계산 안 함)
     const tiers = [
-      allData.map(i => ({ item: i, score: tokenSubseqScore(rawQuery, i) })),
-      allData.map(i => ({ item: i, score: chosungScore(rawQuery, i) })),
-      allData.map(i => ({ item: i, score: getMatchScore(searchVal, i) })),
+      () => allData.map(i => ({ item: i, score: tokenSubseqScore(rawQuery, i) })),
+      () => allData.map(i => ({ item: i, score: chosungScore(rawQuery, i) })),
+      () => allData.map(i => ({ item: i, score: getMatchScore(searchVal, i) })),
     ];
     let scoredItems = [];
     for (const t of tiers) {
-      scoredItems = t.filter(h => h.score > 0);
+      scoredItems = t().filter(h => h.score > 0);
       if (scoredItems.length) break;
     }
+
+    // [P4] GPS 정확도가 양호할 때만 가까운 단지 가산
+    const gpsOk = Number.isFinite(myAcc) && myAcc <= GPS_BONUS_MAX_ACC && Number.isFinite(myLat) && Number.isFinite(myLon);
+    if (gpsOk) scoredItems.forEach(h => { h.score += gpsBonusFor(getDist(h.item.lat, h.item.lon)); });
 
     scoredItems.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return a.item.name.localeCompare(b.item.name);
     });
 
-    return scoredItems.map(d => d.item);
+    return scoredItems;
   }
+  function searchItems(rawQuery) { return searchItemsWithScores(rawQuery).map(d => d.item); }
 
   function refreshDisplay() {
     const container = document.getElementById('list-container');
@@ -972,20 +1237,27 @@
       renderMain(container);
       return;
     } else {
+      const rawVal = document.getElementById('search-input').value;
+      if (searchVal && voiceView && rawVal === voiceView.text) { container.innerHTML = voiceView.html; lastRender = null; return; }  // 음성 후보/무매칭 화면 유지
+      voiceView = null;
       if (searchVal) {
-        filtered = searchItems(document.getElementById('search-input').value);
+        filtered = searchItems(rawVal);
       } else {
         filtered = [...allData].sort((a,b) => a.name.localeCompare(b.name));
       }
     }
-    
+
     lastRender = null;
     const hasFix = Number.isFinite(myLat) && Number.isFinite(myLon);
     const rows = filtered.map(item => {
       const d = hasFix ? getDist(item.lat, item.lon) : 999999;
       return { item, d, near: hasFix && d <= searchRadius };
     });
-    if (rows.length === 0) {
+    const vq = voiceQuery;
+    voiceQuery = null;   // P5: 1회 소비
+    if (rows.length === 0 && searchVal && vq) {
+      renderVoiceNoMatch(container, vq);
+    } else if (rows.length === 0) {
       container.innerHTML = `<div style="color:#555; text-align:center; margin-top:50px;">${searchVal ? '검색 결과가 없습니다.' : '주변 ' + searchRadius + 'm 이내 없음'}</div>`;
     } else {
       container.innerHTML = rows.map(r => cardHtml(r, true)).join('');

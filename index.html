@@ -476,36 +476,59 @@
   }
 
   function getMatchScore(query, item) {
-    const targetStr = (item.name + item.dong + item.addr).toLowerCase().replace(/\s+/g, "");
+    const itemName = String(item.name || '');
+    const itemDong = String(item.dong || '');
+    const nameDongStr = (itemName + itemDong).toLowerCase().replace(/\s+/g, "");
+    const targetStr = (itemName + itemDong + String(item.addr || '')).toLowerCase().replace(/\s+/g, "");
+    const nameStr = itemName.toLowerCase().replace(/\s+/g, "");
 
-    // 숫자가 틀리면 무조건 탈락 (오타 검사 제외)
-    const queryNums = query.match(/\d+/g);
-    if (queryNums) {
-      for (let i = 0; i < queryNums.length; i++) {
-        if (!targetStr.includes(queryNums[i])) return 0;
+    // [4단계] 오타 보정 — "N단지"/"N차" 지정이 있으면 이름 기준으로 엄격 판정
+    const qDesig = query.match(/(\d+)(단지|차)/);
+    if (qDesig) {
+      const nDesig = nameStr.match(/(\d+)(단지|차)/);
+      if (nDesig && nDesig[1] !== qDesig[1]) return 0;  // "2단지" 쿼리에 "1단지"는 제외
+      if (!nameStr.includes(qDesig[1])) return 0;        // 이름에 숫자 자체가 없으면 제외 (동/주소의 숫자는 안 됨)
+    } else {
+      // 숫자가 틀리면 무조건 탈락 (오타 검사 제외)
+      const queryNums = query.match(/\d+/g);
+      if (queryNums) {
+        for (let i = 0; i < queryNums.length; i++) {
+          if (!targetStr.includes(queryNums[i])) return 0;
+        }
       }
     }
 
-    // 숫자를 제외한 문자만 추출해서 유사도 검사
-    const queryLetters = query.replace(/\d+/g, "");
+    // "대박2단지" → "대박" (단지/차 접미사는 이름 매칭에서 제외)
+    const queryLetters = query.replace(/\d+/g, "").replace(/(단지|차)+$/, "");
     if (queryLetters.length < 2) return 0; // 한 글자는 오타 검사 안 함
 
-    let maxErr = queryLetters.length >= 4 ? 2 : 1;
+    const len = queryLetters.length;
+    const maxErr = len <= 3 ? 1 : 2;
     let bestDist = 999;
-    const targetLetters = targetStr.replace(/\d+/g, "");
 
-    for (let len = queryLetters.length - 1; len <= queryLetters.length + 1; len++) {
-      if (len < 2 || len > targetLetters.length) continue;
-      for (let i = 0; i <= targetLetters.length - len; i++) {
-        let dist = levenshtein(queryLetters, targetLetters.substr(i, len));
+    if (len <= 2) {
+      // 짧은 쿼리는 단어 시작 위치에서만 매칭 ("대박"→"대방" O, "대박"→"현대아이파크 속 대아" X)
+      const words = (itemName + ' ' + itemDong).toLowerCase().split(/\s+/)
+        .map(w => w.replace(/\d+/g, "").replace(/(단지|차)/g, ""))
+        .filter(w => w.length >= len);
+      for (const w of words) {
+        const dist = levenshtein(queryLetters, w.substr(0, len));
         if (dist < bestDist) bestDist = dist;
+      }
+    } else {
+      // 이름+동 안에서만 매칭 (주소는 제외 — 주소 오타 매칭이 쓰레기 결과의 주범)
+      const targetLetters = nameDongStr.replace(/\d+/g, "").replace(/(단지|차)/g, "");
+      if (len <= targetLetters.length) {
+        for (let i = 0; i <= targetLetters.length - len; i++) {
+          const dist = levenshtein(queryLetters, targetLetters.substr(i, len));
+          if (dist < bestDist) bestDist = dist;
+        }
       }
     }
 
     if (bestDist <= maxErr) {
-      return 50 - bestDist; 
+      return 50 - bestDist;
     }
-
     return 0;
   }
 

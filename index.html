@@ -215,11 +215,52 @@
     updateStatus();
   }
 
-  // 단지 반경 안에 머무는 중일 때만 현재 표시된 카드 고정
+  // 동 정렬: 숫자 우선 자연 정렬 ("101동" < "119동" < "공통")
+  function cmpDong(a, b) {
+    return String(a.dong || '').localeCompare(String(b.dong || ''), 'ko', { numeric: true });
+  }
+
+  // latch 표시 목록 확장 (순수 함수)
+  // allData: 전체 행 [{id, name, dong, ...}], nearbyItems: latch 직전 화면 행 [{item, d, near}] (거리순 정렬됨),
+  // refPos: {lat, lon} | null — nearbyItems가 비었을 때 300m 폴백용
+  // 반환: { rows: [{item, d, near}], names: [apt_name...] }
+  function expandComplex(allData, nearbyItems, refPos) {
+    const seen = new Set(), names = [];
+    const near = (nearbyItems || []).filter(r => r && r.item && r.near);
+    near.forEach(r => {
+      const n = String(r.item.name || '');
+      if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+    });
+    // 폴백: 표시 목록이 비었으면 마지막 위치 기준 300m 이내 건물에서 단지명 수집
+    if (names.length === 0 && refPos && Number.isFinite(refPos.lat) && Number.isFinite(refPos.lon) && Array.isArray(allData)) {
+      allData.forEach(item => {
+        if (getDist(item.lat, item.lon, refPos.lat, refPos.lon) <= 300) {
+          const n = String(item.name || '');
+          if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+        }
+      });
+    }
+    if (names.length === 0) return { rows: [], names: [] };
+    const rows = near.slice();  // 기존 거리순 유지
+    const nearIds = new Set(near.map(r => r.item.id));
+    const posOk = refPos && Number.isFinite(refPos.lat) && Number.isFinite(refPos.lon);
+    names.forEach(n => {
+      allData
+        .filter(item => String(item.name || '') === n && !nearIds.has(item.id))
+        .sort(cmpDong)
+        .forEach(item => rows.push({ item, d: posOk ? getDist(item.lat, item.lon, refPos.lat, refPos.lon) : 999999, near: false }));
+    });
+    return { rows, names };
+  }
+
+  // 단지 반경 안에 머무는 중일 때만 현재 표시된 카드 고정 (확장: 해당 단지 전체 동)
   function maybeLatch() {
     if (latch || latchSuppressed || currentMode !== 'main' || !lastGood) return;
     if (!lastShown.some(r => r.near)) return;
-    latch = { items: lastShown.slice(), since: Date.now() };
+    const exp = expandComplex(allData, lastShown, { lat: myLat, lon: myLon });
+    latch = exp.names.length > 0
+      ? { items: exp.rows, names: exp.names, since: Date.now() }
+      : { items: lastShown.slice(), names: [], since: Date.now() };
     refreshDisplay();
   }
 
@@ -463,7 +504,14 @@
   function renderMain(container) {
     if (latch) {
       if (lastRender && lastRender.latch === latch) return;
-      container.innerHTML = `<div class="latch-badge" onclick="releaseLatch(true)">[지하 진입 인식] 고정 중 (터치 시 해제)</div>` + latch.items.map(r => cardHtml(r, false)).join('');
+      let badge;
+      if (latch.names && latch.names.length > 0) {
+        const t = latch.names.length > 1 ? '인근 단지 전체 동' : latch.names[0] + ' 전체 동';
+        badge = `<div class="latch-badge" onclick="releaseLatch(true)">📡 신호 끊김 — ${esc(t)}</div>`;
+      } else {
+        badge = `<div class="latch-badge" onclick="releaseLatch(true)">[지하 진입 인식] 고정 중 (터치 시 해제)</div>`;
+      }
+      container.innerHTML = badge + latch.items.map(r => cardHtml(r, false)).join('');
       lastRender = { latch };
       return;
     }

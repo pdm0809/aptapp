@@ -429,6 +429,40 @@
   }
 
   // 글자 오타 교정 스코어 계산 (100% 일치 실패 시에만 호출됨)
+  // 한글 음절 → 초성 (원문 인덱스와 1:1 대응)
+  const CHOSUNG = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+  function getChosung(s) {
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i) - 44032;
+      out += (c >= 0 && c < 11172) ? CHOSUNG[Math.floor(c / 588)] : s[i];
+    }
+    return out;
+  }
+
+  // [2단계] 토큰 순서 매칭: "펜타 한신 2차" → "펜타시티 한신더휴 2차" (중간 단어 생략 허용)
+  function tokenSubseqScore(rawQuery, item) {
+    const tokens = String(rawQuery).toLowerCase().split(/\s+/).filter(t => t.length > 0);
+    if (tokens.length < 2) return 0;
+    const target = (item.name + ' ' + item.dong + ' ' + item.addr).toLowerCase();
+    let pos = 0;
+    for (const tk of tokens) {
+      const idx = target.indexOf(tk, pos);
+      if (idx < 0) return 0;
+      pos = idx + tk.length;
+    }
+    return 40 + tokens.length * 5;
+  }
+
+  // [3단계] 초성 매칭: "ㅍㅌㅅㅌ" → "펜타시티"
+  function chosungScore(rawQuery, item) {
+    const q = String(rawQuery).replace(/\s+/g, '');
+    if (!q || !/^[ㄱ-ㅎ]+$/.test(q)) return 0;
+    const target = getChosung(String(item.name + item.dong).replace(/\s+/g, ''));
+    const idx = target.indexOf(q);
+    return idx < 0 ? 0 : (idx === 0 ? 35 : 30);
+  }
+
   function getMatchScore(query, item) {
     const targetStr = (item.name + item.dong + item.addr).toLowerCase().replace(/\s+/g, "");
 
@@ -525,12 +559,18 @@
           // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단
           filtered = exactMatches.sort((a,b) => a.name.localeCompare(b.name));
         } else {
-          // [2단계 필터] 완벽하게 일치하는 데이터가 없을 때만 오타 보정 알고리즘 작동
+          // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정
+          const rawQuery = document.getElementById('search-input').value;
+          const tiers = [
+            allData.map(i => ({ item: i, score: tokenSubseqScore(rawQuery, i) })),
+            allData.map(i => ({ item: i, score: chosungScore(rawQuery, i) })),
+            allData.map(i => ({ item: i, score: getMatchScore(searchVal, i) })),
+          ];
           let scoredItems = [];
-          allData.forEach(i => {
-            let score = getMatchScore(searchVal, i);
-            if (score > 0) scoredItems.push({ item: i, score: score });
-          });
+          for (const t of tiers) {
+            scoredItems = t.filter(h => h.score > 0);
+            if (scoredItems.length) break;
+          }
 
           scoredItems.sort((a, b) => {
             if (b.score !== a.score) return b.score - a.score;

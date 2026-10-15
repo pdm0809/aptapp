@@ -20,7 +20,7 @@
     /* 마이크 공간 제거 후 검색창을 꽉 차게 변경 */
     .search-wrap { display: none; margin-bottom: 10px; position: relative; }
     .search-box { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; padding-right: 108px; }
-    .mic-btn { position: absolute; right: 6px; top: 6px; bottom: 6px; width: auto; padding: 0 16px; background: var(--accent); color: #000; border: none; border-radius: 8px; font-size: 14px; font-weight: bold; white-space: nowrap; cursor: pointer; z-index: 2; }
+    .mic-btn { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); height: 38px; padding: 0 16px; background: var(--accent); color: #000; border: none; border-radius: 8px; font-size: 14px; font-weight: bold; white-space: nowrap; cursor: pointer; z-index: 2; }
     .mic-btn.listening { background: #ff5a5a; color: #fff; animation: micPulse 1.2s infinite; }
     @keyframes micPulse { 0% { box-shadow: 0 0 0 0 rgba(255,60,60,.6); } 70% { box-shadow: 0 0 0 12px rgba(255,60,60,0); } 100% { box-shadow: 0 0 0 0 rgba(255,60,60,0); } }
     

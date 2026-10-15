@@ -585,7 +585,7 @@
       input.value = finalT + interim;
       if (!interim && finalT) {
         input.value = finalT.trim();
-        input.focus(); refreshDisplay(); onSearchInput({ target: input });
+        input.focus(); refreshDisplay(); hideSuggest();   // 음성 확정 시 제안 목록 없이 바로 전체 검색
       }
     };
     rec.onerror = (e) => {

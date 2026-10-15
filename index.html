@@ -19,9 +19,9 @@
     
     /* 마이크 공간 제거 후 검색창을 꽉 차게 변경 */
     .search-wrap { display: none; margin-bottom: 10px; position: relative; }
-    .search-bar { display: flex; gap: 8px; align-items: stretch; }
-    .search-box { flex: 1 1 auto; min-width: 0; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; }
-    .mic-btn { flex: 0 0 auto; padding: 0 16px; background: var(--accent); color: #000; border: none; border-radius: 10px; font-size: 14px; font-weight: bold; white-space: nowrap; cursor: pointer; }
+    .search-bar { display: flex; gap: 8px; align-items: center; }
+    .search-box { flex: 1 1 auto; min-width: 0; height: 48px; padding: 0 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; }
+    .mic-btn { flex: 0 0 auto; height: 48px; box-sizing: border-box; padding: 0 16px; background: var(--accent); color: #000; border: none; border-radius: 10px; font-size: 14px; font-weight: bold; white-space: nowrap; cursor: pointer; }
     .mic-btn.listening { background: #ff5a5a; color: #fff; animation: micPulse 1.2s infinite; }
     @keyframes micPulse { 0% { box-shadow: 0 0 0 0 rgba(255,60,60,.6); } 70% { box-shadow: 0 0 0 12px rgba(255,60,60,0); } 100% { box-shadow: 0 0 0 0 rgba(255,60,60,0); } }
     

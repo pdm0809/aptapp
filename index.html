@@ -77,7 +77,7 @@
   <div id="content-area">
     <div id="gps-status" class="gps-status"></div>
     <div id="search-wrap" class="search-wrap">
-      <input type="text" id="search-input" class="search-box" placeholder="아파트/동 검색" autocomplete="off" oninput="refreshDisplay(); onSearchInput(event)" onkeydown="onSearchKey(event)" oncompositionstart="sgComposing = true" oncompositionend="sgComposing = false; scheduleSuggest()" onfocus="if (this.value.trim()) scheduleSuggest()" onblur="onSearchBlur()">
+      <input type="text" id="search-input" class="search-box" placeholder="아파트/동 검색" autocomplete="off" oninput="refreshDisplay(); onSearchInput(event)" onkeydown="onSearchKey(event)" onfocus="if (this.value.trim()) scheduleSuggest()" onblur="onSearchBlur()">
       <div id="search-suggest" onmousedown="event.preventDefault()" onmouseover="onSuggestHover(event)" ontouchstart="onSuggestHover(event)" onclick="onSuggestClick(event)"></div>
     </div>
     <div id="list-container">
@@ -552,6 +552,10 @@
   }
 
   let sgComposing = false, sgTimer = null, sgBlurTimer = null, sgItems = [], sgIndex = -1, sgQuery = '';
+
+  // composition 이벤트는 인라인 속성(oncompositionstart)이 동작하지 않아 리스너로 등록
+  document.getElementById('search-input').addEventListener('compositionstart', () => { sgComposing = true; });
+  document.getElementById('search-input').addEventListener('compositionend', () => { sgComposing = false; scheduleSuggest(); });
 
   function suggestBox() { return document.getElementById('search-suggest'); }
   function suggestOpen() { const b = suggestBox(); return !!b && b.style.display === 'block' && sgItems.length > 0; }

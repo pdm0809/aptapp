@@ -297,7 +297,7 @@
     return true;
   }
 
-  // 양호 위치에서 표시 중인 단지 저장 (콜드스타트 복원용)
+  // 양호 위치에서 표시 중인 단지 저장 (최근 방문 칩용)
   function saveGoodComplex(lat, lon, acc, t) {
     const cnt = new Map(), addrOf = new Map();
     (lastShown || []).forEach(r => {
@@ -311,7 +311,6 @@
     cnt.forEach((c, n) => { if (c > best) { best = c; name = n; } });
     if (!name) return;
     try {
-      localStorage.setItem('last_good_complex', JSON.stringify({ name, lat, lon, t, acc }));
       saveRecent(name, addrOf.get(name) || '');
     } catch (e) {}
   }
@@ -636,8 +635,11 @@
   }
 
   function releaseLatch(manual) {
+    const wasCold = latch && (latch.kind === 'wps' || latch.kind === 'pick');
     latch = null;
     if (manual) latchSuppressed = true;   // 새 위치가 들어올 때까지 재고정 안 함
+    // WPS/수동 선택 화면 만료 시 fix가 없으면 이전 위치 목록이 뜨지 않도록 하이브리드 뷰로 복귀 (수동 해제와 동일 처리)
+    if (wasCold && !(Number.isFinite(myLat) && Number.isFinite(myLon))) coldView = { type: 'hybrid', wpsPending: false, wpsCands: [] };
     lastRender = null;
     refreshDisplay();
     updateStatus();

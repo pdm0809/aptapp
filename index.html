@@ -464,6 +464,8 @@
   function headingCos(name) {
     if (fixBuf.length < 2) return null;
     const f0 = fixBuf[0], f1 = fixBuf[fixBuf.length - 1];
+    // NaN 가드: position.coords는 항상 finite라 실유입 경로는 거의 없음 — 방어용
+    if (![f0.lat, f0.lon, f1.lat, f1.lon].every(Number.isFinite)) return 0;
     const dt = f1.t - f0.t;
     if (dt < HEAD_MIN_MS) return null;
     const cosLat = Math.cos(f1.lat * Math.PI / 180);
@@ -472,6 +474,7 @@
     if (mv / (dt / 1000) * 3.6 < SPEED_SLOW_KMH) return null;
     const c = complexCentroid(name);
     if (!c) return null;
+    if (!Number.isFinite(c.lat) || !Number.isFinite(c.lon)) return 0;
     const cx = (c.lon - f1.lon) * 111000 * cosLat, cy = (c.lat - f1.lat) * 111000;
     const cv = Math.hypot(cx, cy);
     if (cv === 0) return null;
@@ -538,6 +541,13 @@
     const byD = [...scored].sort((a, b) => a.dkAvg - b.dkAvg);
     const deltaD = byD.length > 1 ? byD[1].dkAvg - byD[0].dkAvg : 999;
     const fb = checkFallbacks(scored, deltaD, lat, lon);
+    // margin 폴백(거리로 구분 불가): 원칙 "확실하지 않으면 보여주던 단지를 1순위로" — 활성 단지가 있으면 활성 1순위, 도전자 2순위.
+    // (없으면 deltaD>=10m의 challenger-hold보다 거리상 덜 확실한 쪽에서 도전자가 1순위가 되는 역전 발생)
+    // 활성 단지가 없는 최초 래치는 아래 점수 순 표시
+    if (fb === 'margin' && activeIn) {
+      const other = scored.find(s => s.name !== active);
+      return { mode: 'dual', ordered: [active, other.name], scores: scored, reason: fb };
+    }
     if (fb) return { mode: 'dual', ordered: [scored[0].name, scored[1].name], scores: scored, reason: fb };
     const top = scored[0];
     if (top.score < SCORE_CUTOFF) return { mode: 'dual', ordered: [top.name, scored[1].name], scores: scored, reason: 'cutoff' };
@@ -914,6 +924,40 @@
   });
   if (window.matchMedia('(display-mode: standalone)').matches) { document.getElementById('install-btn').style.display = 'none'; }
 
+  // 검색 엔진 (메인 검색·콜드 검색 공용). rawQuery: 입력 원문. 반환: 매칭 행 배열 (순위순)
+  function searchItems(rawQuery) {
+    const searchVal = String(rawQuery || '').toLowerCase().replace(/\s+/g, "");
+    if (!searchVal) return [];
+    // [1단계 필터] 검색어와 100% 완벽하게 일치하는 데이터 먼저 탐색
+    let exactMatches = allData.filter(i => {
+      const targetStr = (i.name + i.dong + i.addr).toLowerCase().replace(/\s+/g, "");
+      return targetStr.includes(searchVal);
+    });
+
+    if (exactMatches.length > 0) {
+      // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단
+      return exactMatches.sort((a,b) => a.name.localeCompare(b.name));
+    }
+    // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정
+    const tiers = [
+      allData.map(i => ({ item: i, score: tokenSubseqScore(rawQuery, i) })),
+      allData.map(i => ({ item: i, score: chosungScore(rawQuery, i) })),
+      allData.map(i => ({ item: i, score: getMatchScore(searchVal, i) })),
+    ];
+    let scoredItems = [];
+    for (const t of tiers) {
+      scoredItems = t.filter(h => h.score > 0);
+      if (scoredItems.length) break;
+    }
+
+    scoredItems.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.item.name.localeCompare(b.item.name);
+    });
+
+    return scoredItems.map(d => d.item);
+  }
+
   function refreshDisplay() {
     const container = document.getElementById('list-container');
     const searchVal = document.getElementById('search-input').value.toLowerCase().replace(/\s+/g, "");
@@ -926,36 +970,7 @@
       return;
     } else {
       if (searchVal) {
-        // [1단계 필터] 검색어와 100% 완벽하게 일치하는 데이터 먼저 탐색
-        let exactMatches = allData.filter(i => {
-          const targetStr = (i.name + i.dong + i.addr).toLowerCase().replace(/\s+/g, "");
-          return targetStr.includes(searchVal);
-        });
-
-        if (exactMatches.length > 0) {
-          // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단
-          filtered = exactMatches.sort((a,b) => a.name.localeCompare(b.name));
-        } else {
-          // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정
-          const rawQuery = document.getElementById('search-input').value;
-          const tiers = [
-            allData.map(i => ({ item: i, score: tokenSubseqScore(rawQuery, i) })),
-            allData.map(i => ({ item: i, score: chosungScore(rawQuery, i) })),
-            allData.map(i => ({ item: i, score: getMatchScore(searchVal, i) })),
-          ];
-          let scoredItems = [];
-          for (const t of tiers) {
-            scoredItems = t.filter(h => h.score > 0);
-            if (scoredItems.length) break;
-          }
-
-          scoredItems.sort((a, b) => {
-            if (b.score !== a.score) return b.score - a.score;
-            return a.item.name.localeCompare(b.item.name);
-          });
-
-          filtered = scoredItems.map(d => d.item);
-        }
+        filtered = searchItems(document.getElementById('search-input').value);
       } else {
         filtered = [...allData].sort((a,b) => a.name.localeCompare(b.name));
       }
@@ -1053,7 +1068,8 @@
     if (!res) return;
     const nq = String(q || '').toLowerCase().replace(/\s+/g, '');
     if (!nq) { res.innerHTML = ''; coldSearchList = []; return; }
-    coldSearchList = complexNames().filter(n => n.toLowerCase().replace(/\s+/g, '').includes(nq)).slice(0, 8);
+    // 메인 검색 엔진(정확 일치 → 토큰 순서 → 초성 → 오타 보정) 결과를 단지명으로 중복 제거 (순위 유지)
+    coldSearchList = [...new Set(searchItems(q).map(i => String(i.name || '')).filter(Boolean))].slice(0, 8);
     res.innerHTML = coldSearchList.map((n, i) => `<button class="chip" onclick="pickSearch(${i})">${esc(n)}</button>`).join('');
   }
   function renderColdView(container) {

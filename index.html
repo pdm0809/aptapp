@@ -408,6 +408,7 @@
   }
   
   function switchMode(mode) {
+    if (mode === 'main') document.getElementById('search-input').value = '';
     currentMode = mode;
     document.getElementById('btn-main').classList.toggle('active', mode === 'main');
     document.getElementById('btn-manage').classList.toggle('active', mode === 'manage'); 

@@ -1115,6 +1115,32 @@
   }
   document.getElementById('mic-btn').addEventListener('click', toggleVoice);
 
+  // 음성 토큰 드롭 폴백: 확실한 매칭이 없을 때 DB 888행 어디에도 없는 토큰(오인식)을 버리고 재검색
+  // 예: "1시 2차 204동" → "1시"는 DB에 없음 → 버림 → "2차 204동"으로 재검색
+  function voiceTokenDropMerge(text, cands) {
+    const seen = new Set();
+    const out = [];
+    const pushAll = (list) => {
+      for (const c of list) {
+        if (out.length >= VOICE_CAND_N) break;
+        if (!c || !c.name || seen.has(c.name)) continue;
+        seen.add(c.name);
+        out.push(c);
+      }
+    };
+    const toks = String(text || '').toLowerCase().split(/\s+/).filter(t => t.length);
+    if (toks.length >= 2) {
+      const hay = (i) => String(i.name || '') + String(i.dong || '') + String(i.addr || '');
+      const garbage = toks.filter(t => !allData.some(i => hay(i).toLowerCase().includes(t)));
+      if (garbage.length > 0 && garbage.length < toks.length) {
+        const kept = toks.filter(t => garbage.indexOf(t) < 0).join(' ');
+        pushAll(topComplexes(searchItemsWithScores(kept), VOICE_CAND_N));
+      }
+    }
+    pushAll(cands || []);
+    return out;
+  }
+
   // 음성 확정: P1 정규화 → P2 n-best 결합 → P8 명확성 게이트 (expand / candidates / none→P5)
   function handleVoiceFinal(input, results, finalT) {
     const ranked = currentMode === 'manage' ? rankVoiceAlts(collectVoiceAlts(results), searchItemsWithScores) : [];
@@ -1123,7 +1149,16 @@
     input.value = best.text;
     voiceView = null;
     const cands = topComplexes(best.scored, VOICE_CAND_N);
-    if (decideVoiceAction(cands) === 'candidates') {
+    const vAction = decideVoiceAction(cands);
+    if (vAction !== 'expand') {
+      const merged = voiceTokenDropMerge(best.text, cands);
+      if (merged.length) {
+        voiceQuery = null;
+        renderVoiceCandidates(document.getElementById('list-container'), best.text, merged);
+        return;
+      }
+    }
+    if (vAction === 'candidates') {
       voiceQuery = null;
       renderVoiceCandidates(document.getElementById('list-container'), best.text, cands);
       return;

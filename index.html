@@ -173,9 +173,13 @@
   const SCORE_CUTOFF = 70, P5_BONUS = 10, CHALLENGER_MIN = 85; // 실측 튜닝 전 잠정치 — 100점 만점, P5 가점은 합계 100 cap
   const GOOD_FIX_ACC = 25, GOOD_FIX_MIN = 3;   // 실측 튜닝 전 잠정치 — 폴백 #4
   // ===== 콜드스타트 (실측 튜닝 전 잠정치) =====
-  const COLD_ZONE_MS = 10 * 60 * 1000;     // 실측 튜닝 전 잠정치 — Zone A: 저장 후 10분 이내
-  const COARSE_GATE_M = 300;               // 실측 튜닝 전 잠정치 — 복원 허용 최대 거리
-  const COARSE_TIMEOUT_MS = 10000, COARSE_MAX_ACC = 800, COARSE_CHIP_N = 3; // 실측 튜닝 전 잠정치
+  const WPS_TIMEOUT_MS = 8000;              // 실측 튜닝 전 잠정치 — 콜드스타트 WPS 1회 요청 타임아웃
+  const WIFI_AUTO_MAX_ACC_M = 150;          // 실측 튜닝 전 잠정치 — 자동 선택 허용 최대 accuracy
+  const WPS_MAX_ACC_M = 800;                // 실측 튜닝 전 잠정치 — 후보 순위화 허용 최대 accuracy
+  const WPS_CANDIDATE_N = 3;                // 실측 튜닝 전 잠정치 — 수동 선택 후보 수
+  const WPS_CANDIDATE_FILTER_M = 300;       // 실측 튜닝 전 잠정치 — 후보 필터: dKAvg ≤ acc + 300m
+  const WPS_AUTO_MAX_D_M = 120;             // 실측 튜닝 전 잠정치 — 자동 선택: 1위 dKAvg ≤ 120m
+  const WPS_AUTO_MIN_GAP_M = 60;            // 실측 튜닝 전 잠정치 — 자동 선택: (2위-1위) ≥ 60m
   const COLD_SILENT_M = 60;                // 실측 튜닝 전 잠정치 — 무음 갱신 기준
   const SNACK_MS = 5000;                   // 실측 튜닝 전 잠정치 — 스낵바 자동 소멸
   const COLD_EXIT_STREAK = 3, COLD_EXIT_MOVE_M = 30; // 실측 튜닝 전 잠정치 — 지상 탈출 판정
@@ -188,11 +192,11 @@
   const prefetch = new Map();                    // 아파트명 -> 사전 준비된 동 목록
   let wakeLock = null, wakeWanted = false;
   let fixBuf = [];                 // P1: {lat, lon, acc, t} 링버퍼 (P4의 이동 trail 겸용)
-  let coldChecked = false, coldView = null, coldDismissed = false, coldSaved = null;
+  let coldChecked = false, coldView = null, coldDismissed = false;
   let coldAnchor = null, coldGoodStreak = 0;
   let snackTimer = null, snackName = null, snackMutedFor = null;
   let latchFilter = null;
-  let coldNameList = [], coldRecentList = [], coldSearchList = [], coldCoarseList = [];
+  let coldNameList = [], coldRecentList = [], coldSearchList = [], coldWpsList = [];
 
   window.onload = () => {
     const savedRad = localStorage.getItem('aptSearchRadius');
@@ -251,7 +255,7 @@
   }
 
   function acceptPos(lat, lon, acc, t) {
-    if (latch && latch.kind === 'cold' && !coldDismissed) {
+    if (latch && (latch.kind === 'wps' || latch.kind === 'pick') && !coldDismissed) {
       if (acceptPosCold(lat, lon, acc, t)) return;  // true=콜드 모드 유지
       // false=지상 탈출 → 아래 일반 처리로 폴스루
     }
@@ -285,10 +289,7 @@
         distM(lat, lon, coldAnchor.lat, coldAnchor.lon) > COLD_EXIT_MOVE_M) {
       return false;
     }
-    if (dCur <= COLD_SILENT_M) {
-      const el = document.getElementById('cold-badge-txt');
-      if (el) el.textContent = '🕘 ' + fmtAgo(Date.now() - (latch.savedT || latch.since)) + ' 위치 기준 — 현위치 아님';
-    } else {
+    if (dCur > COLD_SILENT_M) {
       let best = null, bestD = 999999;
       complexNames().forEach(n => { const d = complexMinDist(n, lat, lon); if (d < bestD) { bestD = d; best = n; } });
       if (best && best !== snackMutedFor) { snackName = best; showColdSnack(best); }
@@ -313,13 +314,6 @@
       localStorage.setItem('last_good_complex', JSON.stringify({ name, lat, lon, t, acc }));
       saveRecent(name, addrOf.get(name) || '');
     } catch (e) {}
-  }
-  function getSavedComplex() {
-    try {
-      const s = JSON.parse(localStorage.getItem('last_good_complex') || 'null');
-      if (s && s.name && Number.isFinite(s.lat) && Number.isFinite(s.lon) && Number.isFinite(s.t)) return s;
-    } catch (e) {}
-    return null;
   }
   function getRecents() {
     try {
@@ -557,13 +551,20 @@
     }
     return { mode: 'single', ordered: [top.name], scores: scored, reason: null };
   }
-  // 저정밀(coarse) 위치의 오차원 안에 건물이 들어오는 단지 후보 (가까운 순)
-  function coarseCandidates(lat, lon, acc) {
+  // WPS 위치 기준 단지 후보: dKAvg ≤ acc + 필터 여유, 가까운 순
+  function wpsCandidates(lat, lon, acc) {
     return complexNames()
-      .map(name => ({ name, d: complexMinDist(name, lat, lon) }))
-      .filter(c => c.d <= acc)
-      .sort((a, b) => a.d - b.d)
-      .slice(0, COARSE_CHIP_N);
+      .map(name => ({ name, d: dKAvg(name, lat, lon).avg }))
+      .filter(c => c.d <= acc + WPS_CANDIDATE_FILTER_M)
+      .sort((a, b) => a.d - b.d);
+  }
+  // WPS 후보 순위 → 동작 결정 (순수 함수). 후보 1개면 격차 조건은 vacuously true
+  function decideWpsAction(ranked, acc) {
+    if (acc > WPS_MAX_ACC_M) return { action: 'hybrid' };
+    if (!ranked.length) return { action: 'hybrid' };
+    if (acc <= WIFI_AUTO_MAX_ACC_M && ranked[0].d <= WPS_AUTO_MAX_D_M &&
+        (ranked.length < 2 || ranked[1].d - ranked[0].d >= WPS_AUTO_MIN_GAP_M)) return { action: 'auto', name: ranked[0].name };
+    return { action: 'pick' };
   }
 
   // latch 표시 목록 확장 (순수 함수)
@@ -612,7 +613,7 @@
 
   // 점프 보류 중 표시: 점프 직전 마지막 신뢰 위치 기준으로 해당 단지 전체 동 표시
   function holdJumpComplex() {
-    if (latch && latch.kind === 'cold') return;  // CP3: 콜드 복원 화면 보호
+    if (latch && (latch.kind === 'wps' || latch.kind === 'pick')) return;  // CP3: WPS/수동 선택 화면 보호
     if (currentMode !== 'main' || !lastGood) return;
     const exp = expandComplex(allData, lastShown, { lat: lastGood.lat, lon: lastGood.lon });
     latch = exp.names.length > 0
@@ -989,69 +990,70 @@
     }
   }
 
-  // ===== 콜드스타트: GPS 미확보 상태에서 저장 단지 복원 / 단지 선택 =====
+  // ===== 콜드스타트: GPS 미확보 상태에서 WPS(WiFi 측위) 기반 단지 순위화 / 단지 선택 =====
+  // 이전 위치·저장 단지는 절대 복원하지 않는다 (전지역 이동 사용자 실측 실패)
   function coldBootCheck() {
     coldChecked = true;
-    if (!allData || allData.length === 0) { coldView = { type: 'hybrid', coarsePending: false, needData: true }; return; }
-    coldView = { type: 'hybrid', coarsePending: true, coarseCands: [] };
-    const saved = getSavedComplex();
-    coldSaved = (saved && !coldDismissed && (Date.now() - saved.t) <= COLD_ZONE_MS) ? saved : null;
+    if (!allData || allData.length === 0) { coldView = { type: 'hybrid', wpsPending: false, needData: true }; return; }
+    coldView = { type: 'wps-pending', wpsPending: true, wpsCands: [] };
     if (navigator.geolocation) {
       try {
-        navigator.geolocation.getCurrentPosition(onColdCoarseOk, onColdCoarseErr,
-          { enableHighAccuracy: false, timeout: COARSE_TIMEOUT_MS, maximumAge: 60000 });
+        navigator.geolocation.getCurrentPosition(onColdWpsOk, onColdWpsErr,
+          { enableHighAccuracy: true, timeout: WPS_TIMEOUT_MS, maximumAge: 0 });
         return;
       } catch (e) {}
     }
-    onColdCoarseErr();
+    onColdWpsErr();
   }
-  function onColdCoarseOk(p) {
-    if (latch || (Number.isFinite(myLat) && Number.isFinite(myLon))) return; // 이미 복원됐거나 실측 위치 확보
-    const c = p.coords;
+  function onColdWpsOk(p) {
+    if (coldDismissed) return;
+    if (latch || (Number.isFinite(myLat) && Number.isFinite(myLon))) return; // 이미 단지 선택됐거나 실측 위치 확보
+    const c = (p && p.coords) || {};
     const lat = c.latitude, lon = c.longitude;
-    const acc = Number.isFinite(c.accuracy) ? c.accuracy : 999;
+    const acc = Number.isFinite(c.accuracy) ? c.accuracy : 99999;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) { onColdWpsErr(); return; }
     coldView = coldView || { type: 'hybrid' };
-    coldView.coarsePending = false;
-    if (Number.isFinite(lat) && Number.isFinite(lon) && acc <= COARSE_MAX_ACC) {
-      coldView.coarseCands = coarseCandidates(lat, lon, acc);
-      // 박동민 필수 요구: coarse가 저장 위치 300m 밖이면 복원 금지
-      if (coldSaved && currentMode === 'main' && distM(lat, lon, coldSaved.lat, coldSaved.lon) <= COARSE_GATE_M) {
-        doColdRestore(coldSaved.name, coldSaved.t);
-        return;
-      }
+    coldView.wpsPending = false;
+    const ranked = wpsCandidates(lat, lon, acc);
+    coldView.wpsLat = lat; coldView.wpsLon = lon; coldView.wpsAcc = acc;
+    const dec = decideWpsAction(ranked, acc);
+    if (dec.action === 'auto' && doWpsAutoSelect(dec.name, lat, lon, acc)) return;
+    if (dec.action === 'auto' || dec.action === 'pick') {
+      coldView.type = 'wps-pick';
+      coldView.wpsCands = coldWpsList = ranked.slice(0, WPS_CANDIDATE_N);
+    } else {
+      coldView.type = 'hybrid';
+      coldView.wpsCands = coldWpsList = [];
     }
+    refreshDisplay();
+  }
+  function onColdWpsErr() {
+    if (latch || (Number.isFinite(myLat) && Number.isFinite(myLon))) return;
+    coldView = coldView || { type: 'hybrid' };
+    coldView.wpsPending = false;
     coldView.type = 'hybrid';
     refreshDisplay();
   }
-  function onColdCoarseErr() {
-    if (latch || (Number.isFinite(myLat) && Number.isFinite(myLon))) return;
-    coldView = coldView || { type: 'hybrid' };
-    coldView.coarsePending = false;
-    if (coldSaved && currentMode === 'main') {
-      coldView.type = 'confirm'; coldView.name = coldSaved.name; coldView.t = coldSaved.t;
-    } else coldView.type = 'hybrid';
-    refreshDisplay();
-  }
-  function doColdRestore(name, savedT) {
-    if (coldDismissed || currentMode !== 'main' || !name) return;
-    const saved = getSavedComplex();
-    const rl = (saved && saved.name === name) ? saved : null;
+  // WPS 1위 단지 자동 선택: 해당 단지 전체 동 표시 (거리는 WPS 위치 기준). 성공 시 true
+  function doWpsAutoSelect(name, lat, lon, acc) {
+    if (coldDismissed || currentMode !== 'main' || !name) return false;
     const rows = complexItems(name).sort(cmpDong).map(item => {
-      const d = rl ? getDist(item.lat, item.lon, rl.lat, rl.lon) : 999999;
+      const d = getDist(item.lat, item.lon, lat, lon);
       return { item, d, near: d <= searchRadius };
     });
-    if (!rows.length) return;
-    latch = { items: rows, names: [name], since: Date.now(), kind: 'cold', savedT: savedT || Date.now(), rank: null };
+    if (!rows.length) return false;
+    latch = { items: rows, names: [name], since: Date.now(), kind: 'wps', wpsAcc: Math.round(acc), rank: null };
     latchFilter = null; coldView = null; coldAnchor = null; coldGoodStreak = 0;
     lastRender = null;
     refreshDisplay();
+    return true;
   }
-  function doColdRestoreConfirm() { if (coldView && coldView.name) doColdRestore(coldView.name, coldView.t); }
-  function closeColdRestore(e) { if (e && e.stopPropagation) e.stopPropagation(); coldDismissed = true; releaseLatch(true); }
-  function coldDecline() { coldDismissed = true; coldView = { type: 'hybrid', coarsePending: false, coarseCands: [] }; refreshDisplay(); }
+  function closeColdRestore(e) { if (e && e.stopPropagation) e.stopPropagation(); coldDismissed = true; coldView = { type: 'hybrid', wpsPending: false, wpsCands: [] }; releaseLatch(true); }
+  function closePickView() { coldDismissed = true; coldView = { type: 'hybrid', wpsPending: false, wpsCands: [] }; releaseLatch(true); }
 
   // 칩/검색/전체 목록에서 단지 선택 시 해당 단지 전체 동 표시
   function showComplexRows(name) {
+    coldAnchor = null; coldGoodStreak = 0; coldDismissed = false;
     const rows = complexItems(name).sort(cmpDong).map(item => ({ item, d: 999999, near: false }));
     if (!rows.length) return;
     latch = { items: rows, names: [name], since: Date.now(), kind: 'pick', rank: null };
@@ -1059,7 +1061,7 @@
     refreshDisplay();
   }
   function pickRecent(i) { const r = coldRecentList[i]; if (r) showComplexRows(r.name); }
-  function pickCoarse(i) { const c = coldCoarseList[i]; if (c) showComplexRows(c.name); }
+  function pickWps(i) { const c = coldWpsList[i]; if (c) showComplexRows(c.name); }
   function pickSearch(i) { const n = coldSearchList[i]; if (n) showComplexRows(n); }
   function pickComplexByIdx(i) { const n = coldNameList[i]; if (n) showComplexRows(n); }
   function shortAddr(a) { const m = String(a || '').match(/([가-힣0-9]+(동|리|읍|면))/); return m ? m[1] : ''; }
@@ -1076,17 +1078,13 @@
     const v = coldView || { type: 'hybrid' };
     const prevQ = (document.getElementById('cold-search') || {}).value || '';  // 재렌더 시 입력 중인 검색어 유지
     let html = '';
-    if (v.type === 'confirm' && v.name) {
-      html += `<div class="cold-card"><div style="color:#999; font-size:13px;">🕘 ${fmtAgo(Date.now() - v.t)} 위치</div>` +
-        `<div style="font-size:1.2em; font-weight:bold; color:var(--accent); margin:8px 0 12px;">${esc(v.name)}</div>` +
-        `<button class="snack-ok" style="padding:10px 18px; border:none; border-radius:8px; font-weight:bold; margin:0 4px; cursor:pointer;" onclick="doColdRestoreConfirm()">전체 동 보기</button>` +
-        `<button class="snack-no" style="padding:10px 18px; border:none; border-radius:8px; font-weight:bold; margin:0 4px; cursor:pointer;" onclick="coldDecline()">아니요</button></div>`;
-    }
-    html += `<div class="cold-status">${v.coarsePending ? '📡 위치 확인 중...' : '📡 GPS 신호 없음 — 아래에서 단지를 선택하세요'}</div>`;
-    coldCoarseList = (v.coarseCands || []).slice();
-    if (coldCoarseList.length) {
-      html += `<div class="cold-sec">내 주변 후보 단지</div><div class="chip-row">` +
-        coldCoarseList.map((c, i) => `<button class="chip" onclick="pickCoarse(${i})">${esc(c.name)} <small>약 ${Math.round(c.d)}m</small></button>`).join('') + `</div>`;
+    html += `<div class="cold-status">${v.wpsPending ? '📡 위치 확인 중...' : '📡 GPS 신호 없음 — 아래에서 단지를 선택하세요'}</div>`;
+    coldWpsList = (v.wpsCands || []).slice();
+    if (coldWpsList.length) {
+      html += `<div class="cold-sec">📶 WiFi 위치 후보</div>`;
+      if (Number.isFinite(v.wpsAcc) && v.wpsAcc > WIFI_AUTO_MAX_ACC_M) html += `<div class="cold-status">위치 정확도가 낮아 직접 선택해 주세요</div>`;
+      html += `<div class="chip-row">` +
+        coldWpsList.map((c, i) => `<button class="chip" onclick="pickWps(${i})">${esc(c.name)} <small>약 ${Math.round(c.d)}m</small></button>`).join('') + `</div>`;
     }
     coldRecentList = getRecents().slice(0, RECENT_CHIP_N);
     if (coldRecentList.length) {
@@ -1110,10 +1108,10 @@
     const rank = latch.rank;
     const dual = !!(rank && rank.mode === 'dual' && rank.ordered && rank.ordered.length >= 2);
     let badge;
-    if (latch.kind === 'cold') {
-      badge = `<div class="latch-badge"><span id="cold-badge-txt">🕘 ${fmtAgo(now - (latch.savedT || latch.since))} 위치 기준 — 현위치 아님</span> <span class="cold-x" onclick="closeColdRestore(event)">✕</span></div>`;
+    if (latch.kind === 'wps') {
+      badge = `<div class="latch-badge">📶 WiFi 위치 기준 (정확도 약 ${latch.wpsAcc}m) <span class="cold-x" onclick="closeColdRestore(event)">✕</span></div>`;
     } else if (latch.kind === 'pick') {
-      badge = `<div class="latch-badge" onclick="releaseLatch(true)">📍 ${esc(latch.names[0] || '')} 전체 동 (터치 시 해제)</div>`;
+      badge = `<div class="latch-badge" onclick="closePickView()">📍 ${esc(latch.names[0] || '')} 전체 동 (터치 시 해제)</div>`;
     } else if (dual) {
       badge = `<div class="latch-badge" onclick="releaseLatch(true)">📡 신호 미약 — 인접 2개 단지 동시 표시 (터치 시 해제)</div>`;
     } else if (latch.names && latch.names.length > 0) {
@@ -1163,7 +1161,7 @@
     if (!hasFix && coldView) { renderColdView(container); return; }
     const ref = hasFix ? { lat: myLat, lon: myLon } : getSavedPos();
     usingSavedPos = hasFix ? null : ref;
-    if (!ref) { coldView = coldView || { type: 'hybrid', coarsePending: false, coarseCands: [] }; renderColdView(container); return; }
+    if (!ref) { coldView = coldView || { type: 'hybrid', wpsPending: false, wpsCands: [] }; renderColdView(container); return; }
 
     const now = Date.now();
     const exitR = searchRadius + Math.max(HYST_MIN_M, hasFix && Number.isFinite(myAcc) ? myAcc : 0);

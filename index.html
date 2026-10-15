@@ -19,7 +19,10 @@
     
     /* 마이크 공간 제거 후 검색창을 꽉 차게 변경 */
     .search-wrap { display: none; margin-bottom: 10px; position: relative; }
-    .search-box { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; }
+    .search-box { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; padding-right: 52px; }
+    .mic-btn { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; padding: 0; background: transparent; border: none; border-radius: 50%; font-size: 20px; line-height: 40px; cursor: pointer; color: #fff; z-index: 2; }
+    .mic-btn.listening { color: #ff5a5a; animation: micPulse 1.2s infinite; }
+    @keyframes micPulse { 0% { box-shadow: 0 0 0 0 rgba(255,60,60,.6); } 70% { box-shadow: 0 0 0 12px rgba(255,60,60,0); } 100% { box-shadow: 0 0 0 0 rgba(255,60,60,0); } }
     /* 자동완성 드롭다운: absolute라 열고 닫아도 레이아웃 점프 없음 */
     #search-suggest { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 1000; background: #222; border: 1px solid #444; border-radius: 10px; max-height: 45vh; overflow-y: auto; -webkit-overflow-scrolling: touch; box-shadow: 0 8px 20px rgba(0,0,0,0.7); font-size: 16px; }
     .sg-item { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; box-sizing: border-box; border-bottom: 1px solid #333; color: #fff; cursor: pointer; }
@@ -78,6 +81,7 @@
     <div id="gps-status" class="gps-status"></div>
     <div id="search-wrap" class="search-wrap">
       <input type="text" id="search-input" class="search-box" placeholder="아파트/동 검색" autocomplete="off" oninput="refreshDisplay(); onSearchInput(event)" onkeydown="onSearchKey(event)" onfocus="if (this.value.trim()) scheduleSuggest()" onblur="onSearchBlur()">
+      <button type="button" id="mic-btn" class="mic-btn" style="display:none" aria-label="음성 검색">🎤</button>
       <div id="search-suggest" onmousedown="event.preventDefault()" onmouseover="onSuggestHover(event)" ontouchstart="onSuggestHover(event)" onclick="onSuggestClick(event)"></div>
     </div>
     <div id="list-container">
@@ -556,6 +560,45 @@
   // composition 이벤트는 인라인 속성(oncompositionstart)이 동작하지 않아 리스너로 등록
   document.getElementById('search-input').addEventListener('compositionstart', () => { sgComposing = true; });
   document.getElementById('search-input').addEventListener('compositionend', () => { sgComposing = false; scheduleSuggest(); });
+
+  // 음성 검색: SpeechRecognition 지원 브라우저에서만 마이크 버튼 노출
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SR) document.getElementById('mic-btn').style.display = 'block';
+  let rec = null, recListening = false;
+
+  function setMicListening(on) {
+    recListening = on;
+    document.getElementById('mic-btn').classList.toggle('listening', on);
+  }
+
+  function toggleVoice() {
+    if (recListening) { try { rec.stop(); } catch (e) {} setMicListening(false); return; }
+    const input = document.getElementById('search-input');
+    rec = new SR();
+    rec.lang = 'ko-KR'; rec.interimResults = true; rec.maxAlternatives = 1;
+    rec.onresult = (ev) => {
+      let finalT = '', interim = '';
+      for (let i = 0; i < ev.results.length; i++) {
+        if (ev.results[i].isFinal) finalT += ev.results[i][0].transcript;
+        else interim += ev.results[i][0].transcript;
+      }
+      input.value = finalT + interim;
+      if (!interim && finalT) {
+        input.value = finalT.trim();
+        input.focus(); refreshDisplay(); onSearchInput({ target: input });
+      }
+    };
+    rec.onerror = (e) => {
+      setMicListening(false);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') showMsg('설정에서 마이크 권한을 허용해 주세요');
+      else if (e.error === 'no-speech') showMsg('음성이 감지되지 않았어요');
+      else if (e.error !== 'aborted') showMsg('음성 인식 오류: ' + e.error);
+    };
+    const r = rec;   // 빠르게 재시작 시 이전 인스턴스의 늦은 onend가 새 인스턴스를 지우지 않게
+    rec.onend = () => { if (rec !== r) return; setMicListening(false); rec = null; };
+    try { rec.start(); setMicListening(true); } catch (e) { setMicListening(false); }
+  }
+  document.getElementById('mic-btn').addEventListener('click', toggleVoice);
 
   function suggestBox() { return document.getElementById('search-suggest'); }
   function suggestOpen() { const b = suggestBox(); return !!b && b.style.display === 'block' && sgItems.length > 0; }

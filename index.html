@@ -20,6 +20,14 @@
     /* 마이크 공간 제거 후 검색창을 꽉 차게 변경 */
     .search-wrap { display: none; margin-bottom: 10px; position: relative; }
     .search-box { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; }
+    /* 자동완성 드롭다운: absolute라 열고 닫아도 레이아웃 점프 없음 */
+    #search-suggest { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 1000; background: #222; border: 1px solid #444; border-radius: 10px; max-height: 45vh; overflow-y: auto; -webkit-overflow-scrolling: touch; box-shadow: 0 8px 20px rgba(0,0,0,0.7); font-size: 16px; }
+    .sg-item { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; box-sizing: border-box; border-bottom: 1px solid #333; color: #fff; cursor: pointer; }
+    .sg-item:last-child { border-bottom: none; }
+    .sg-item.active { background: #0b3f47; box-shadow: inset 4px 0 0 var(--accent); }
+    .sg-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sg-dong { flex: 0 0 auto; max-width: 40%; color: #999; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #search-suggest b { color: var(--accent); }
     
     .list-item { background: var(--card); padding: 12px; border-radius: 12px; margin-bottom: 8px; border: 1px solid #333; display: flex; justify-content: space-between; align-items: center; position: relative; }
     .list-item.near { border-color: var(--accent); background: #081214; }
@@ -69,7 +77,8 @@
   <div id="content-area">
     <div id="gps-status" class="gps-status"></div>
     <div id="search-wrap" class="search-wrap">
-      <input type="text" id="search-input" class="search-box" placeholder="아파트/동 검색" oninput="refreshDisplay()">
+      <input type="text" id="search-input" class="search-box" placeholder="아파트/동 검색" autocomplete="off" oninput="refreshDisplay(); onSearchInput(event)" onkeydown="onSearchKey(event)" oncompositionstart="sgComposing = true" oncompositionend="sgComposing = false; scheduleSuggest()" onfocus="if (this.value.trim()) scheduleSuggest()" onblur="onSearchBlur()">
+      <div id="search-suggest" onmousedown="event.preventDefault()" onmouseover="onSuggestHover(event)" ontouchstart="onSuggestHover(event)" onclick="onSuggestClick(event)"></div>
     </div>
     <div id="list-container">
       <div id="loading-msg" style="color:#555; text-align:center; margin-top:80px;">📍 현재 위치를 확인 중입니다...</div>
@@ -173,6 +182,7 @@
     if (acc > ACC_REJECT) { updateStatus(); return; }   // 정확도 불량: 위치 갱신 거부
 
     // 순간이동 거부: 비정상 속도면 보류, 연속 2회 같은 지점이면 확정
+    // 보류 중에는 점프 직전 마지막 신뢰 위치 기준으로 해당 단지 전체 동을 표시
     if (lastGood) {
       const dt = Math.max((now - lastGood.t) / 1000, 1);
       if (distM(lastGood.lat, lastGood.lon, lat, lon) / dt > MAX_SPEED) {
@@ -180,10 +190,12 @@
           if (++pendingJump.count < 2) { updateStatus(); return; }
         } else {
           pendingJump = { lat, lon, acc, count: 0 };
+          if (!latch || latch.kind !== 'jump') holdJumpComplex();
           updateStatus(); return;
         }
       }
     }
+    if (pendingJump && latch && latch.kind === 'jump') latch = null;  // 점프 확정/기각: 확장 해제
     pendingJump = null;
     acceptPos(lat, lon, acc, now);
   }
@@ -253,14 +265,24 @@
     return { rows, names };
   }
 
+  // 점프 보류 중 표시: 점프 직전 마지막 신뢰 위치 기준으로 해당 단지 전체 동 표시
+  function holdJumpComplex() {
+    if (currentMode !== 'main' || !lastGood) return;
+    const exp = expandComplex(allData, lastShown, { lat: lastGood.lat, lon: lastGood.lon });
+    latch = exp.names.length > 0
+      ? { items: exp.rows, names: exp.names, since: Date.now(), kind: 'jump' }
+      : { items: lastShown.slice(), names: [], since: Date.now(), kind: 'jump' };
+    refreshDisplay();
+  }
+
   // 단지 반경 안에 머무는 중일 때만 현재 표시된 카드 고정 (확장: 해당 단지 전체 동)
   function maybeLatch() {
     if (latch || latchSuppressed || currentMode !== 'main' || !lastGood) return;
     if (!lastShown.some(r => r.near)) return;
     const exp = expandComplex(allData, lastShown, { lat: myLat, lon: myLon });
     latch = exp.names.length > 0
-      ? { items: exp.rows, names: exp.names, since: Date.now() }
-      : { items: lastShown.slice(), names: [], since: Date.now() };
+      ? { items: exp.rows, names: exp.names, since: Date.now(), kind: 'signal' }
+      : { items: lastShown.slice(), names: [], since: Date.now(), kind: 'signal' };
     refreshDisplay();
   }
 
@@ -387,8 +409,9 @@
     refreshDisplay();
   }
   
-  function switchMode(mode) { 
-    currentMode = mode; 
+  function switchMode(mode) {
+    hideSuggest();
+    currentMode = mode;
     document.getElementById('btn-main').classList.toggle('active', mode === 'main');
     document.getElementById('btn-manage').classList.toggle('active', mode === 'manage'); 
     document.getElementById('search-wrap').style.display = (mode === 'manage') ? 'block' : 'none'; 
@@ -445,7 +468,184 @@
 
     return 0;
   }
-  
+
+  // ===== 자동완성 (검색 모드) =====
+  const CHOSUNG = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+
+  // 한글 음절 → 초성, 그 외 문자는 그대로 (UTF-16 단위 1:1이라 원문 인덱스와 정렬됨)
+  function getChosung(str) {
+    const s = String(str == null ? '' : str);
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i) - 0xAC00;
+      out += (c >= 0 && c < 11172) ? CHOSUNG[Math.floor(c / 588)] : s[i];
+    }
+    return out;
+  }
+
+  // 관련성 점수 (높을수록 우선, 0=불일치). noFuzzy=true면 오타 보정 단계 생략
+  function scoreMatch(query, row, noFuzzy) {
+    const NONE = { score: 0, field: null, index: null, len: null };
+    const q = String(query == null ? '' : query).trim().toLowerCase();
+    if (!q || !row) return NONE;
+    const name = String(row.name == null ? '' : row.name), dong = String(row.dong == null ? '' : row.dong);
+    const ln = name.toLowerCase(), ld = dong.toLowerCase();
+
+    if (ln === q) return { score: 1000, field: 'name', index: 0, len: q.length };            // ① 이름 완전 일치
+    let i = ln.indexOf(q);
+    if (i === 0) return { score: 900, field: 'name', index: 0, len: q.length };              // ② 이름 앞부분
+    if (i > 0) return { score: 800 - Math.min(i, 99), field: 'name', index: i, len: q.length }; // ③ 이름 포함 (앞일수록 가점)
+    i = ld.indexOf(q);
+    if (i >= 0) return { score: ld === q ? 600 : 500 - Math.min(i, 99), field: 'dong', index: i, len: q.length }; // ④ 동
+
+    const qs = q.replace(/\s+/g, '');
+    if (!qs) return NONE;
+    if ((ln + ld).replace(/\s+/g, '').includes(qs)) return { score: 400, field: null, index: null, len: null }; // "푸르지오 119동"처럼 이름+동 걸침
+    if (/^[ㄱ-ㅎ]+$/.test(qs)) {                                                              // ⑤ 초성
+      const c = getChosung(ln).indexOf(qs);
+      return c < 0 ? NONE : { score: c === 0 ? 300 : 250 - Math.min(c, 99), field: 'name', index: c, len: qs.length };
+    }
+    if (noFuzzy) return NONE;
+    const f = getMatchScore(qs, { name, dong, addr: String(row.addr == null ? '' : row.addr) }); // ⑥ 오타 1~2자
+    return f > 0 ? { score: f, field: null, index: null, len: null } : NONE;
+  }
+
+  // 제안 목록: 점수 내림차순 → 이름 짧은 순 → 가나다 → 동(숫자 인식) → id. id 기준 중복 제거.
+  // refreshDisplay와 같이 정확 매치가 하나도 없을 때만 오타 보정 결과를 쓴다.
+  function rankSuggestions(query, rows, limit) {
+    let hits = [];
+    const collect = (noFuzzy) => {
+      const seen = new Set();
+      hits = [];
+      (rows || []).forEach(r => {
+        const k = r.id ? 'id:' + r.id : 'k:' + keyOf(r);
+        if (seen.has(k)) return;
+        const m = scoreMatch(query, r, noFuzzy);
+        if (m.score > 0) { seen.add(k); hits.push({ item: r, m }); }
+      });
+    };
+    collect(true);
+    if (!hits.length) collect(false);
+    hits.sort((a, b) => (b.m.score - a.m.score)
+      || (a.item.name.length - b.item.name.length)
+      || a.item.name.localeCompare(b.item.name, 'ko')
+      || String(a.item.dong).localeCompare(String(b.item.dong), 'ko', { numeric: true })
+      || String(a.item.id).localeCompare(String(b.item.id)));
+    return hits.slice(0, limit == null ? 10 : limit);
+  }
+
+  // 전체 텍스트를 먼저 escape한 뒤, 원문 [index, index+len) 구간에 해당하는 escape 위치만 <b>로 감싼다
+  function highlightHtml(text, index, len) {
+    const s = String(text == null ? '' : text);
+    const e = esc(s);
+    if (index == null || !len || index < 0 || index >= s.length) return e;
+    const a = esc(s.slice(0, index)).length;
+    const b = a + esc(s.slice(index, index + len)).length;
+    return e.slice(0, a) + '<b>' + e.slice(a, b) + '</b>' + e.slice(b);
+  }
+
+  // 하이라이트 이동: cur=-1은 선택 없음, 끝에서 멈춤(순환 없음)
+  function moveSuggestIndex(cur, dir, len) {
+    if (!(len > 0)) return -1;
+    if (cur < 0) return dir > 0 ? 0 : -1;
+    return Math.max(0, Math.min(len - 1, cur + dir));
+  }
+
+  let sgComposing = false, sgTimer = null, sgBlurTimer = null, sgItems = [], sgIndex = -1, sgQuery = '';
+
+  function suggestBox() { return document.getElementById('search-suggest'); }
+  function suggestOpen() { const b = suggestBox(); return !!b && b.style.display === 'block' && sgItems.length > 0; }
+
+  function hideSuggest() {
+    clearTimeout(sgTimer); sgTimer = null;
+    sgItems = []; sgIndex = -1;
+    const b = suggestBox();
+    if (b) { b.style.display = 'none'; b.innerHTML = ''; }
+  }
+
+  function scheduleSuggest() {
+    clearTimeout(sgTimer);
+    sgTimer = setTimeout(runSuggest, 150);
+  }
+
+  // 디바운스 콜백: 실행 시점의 입력창 값을 다시 읽어 그 기준으로만 렌더링
+  function runSuggest() {
+    sgTimer = null;
+    if (sgComposing) return;
+    const input = document.getElementById('search-input');
+    const q = input.value;
+    if (currentMode !== 'manage' || !q.trim() || document.activeElement !== input) { hideSuggest(); return; }
+    const list = rankSuggestions(q, allData, 10);
+    if (!list.length) { hideSuggest(); return; }
+    sgItems = list.map(h => h.item); sgIndex = -1; sgQuery = q;
+    const b = suggestBox();
+    b.innerHTML = list.map((h, k) => {
+      const m = h.m;
+      return `<div class="sg-item" data-i="${k}"><span class="sg-name">${highlightHtml(h.item.name, m.field === 'name' ? m.index : null, m.len)}</span><span class="sg-dong">${highlightHtml(h.item.dong, m.field === 'dong' ? m.index : null, m.len)}</span></div>`;
+    }).join('');
+    b.style.display = 'block';
+    b.scrollTop = 0;
+  }
+
+  function setSuggestIndex(k, fillInput) {
+    sgIndex = k;
+    const els = suggestBox().querySelectorAll('.sg-item');
+    els.forEach((el, n) => el.classList.toggle('active', n === k));
+    if (k >= 0 && els[k]) {
+      els[k].scrollIntoView({ block: 'nearest' });
+      if (fillInput) document.getElementById('search-input').value = (sgItems[k].name + ' ' + sgItems[k].dong).trim();
+    }
+  }
+
+  function selectSuggest(k) {
+    const item = sgItems[k];
+    hideSuggest();
+    if (!item) return;
+    document.getElementById('search-input').blur();
+    showEditModal(item);
+  }
+
+  function onSearchInput(e) {
+    if (sgComposing || (e && e.isComposing)) return;   // 조합 중엔 compositionend에서 갱신
+    if (!e.target.value.trim()) { hideSuggest(); return; }
+    scheduleSuggest();
+  }
+
+  function onSearchKey(e) {
+    if (e.isComposing || e.keyCode === 229) return;    // IME 조합 중 키 입력은 무시
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!suggestOpen()) { if (e.key === 'ArrowDown' && e.target.value.trim()) { e.preventDefault(); runSuggest(); } return; }
+      e.preventDefault();
+      const k = moveSuggestIndex(sgIndex, e.key === 'ArrowDown' ? 1 : -1, sgItems.length);
+      if (k !== sgIndex) setSuggestIndex(k, true);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (suggestOpen() && sgIndex >= 0) { selectSuggest(sgIndex); return; }
+      refreshDisplay();
+      hideSuggest();
+    } else if (e.key === 'Escape') {
+      if (suggestOpen() && sgIndex >= 0) e.target.value = sgQuery;   // 방향키로 바뀐 입력 원복
+      hideSuggest();
+    }
+  }
+
+  function onSearchBlur() {
+    clearTimeout(sgBlurTimer);
+    sgBlurTimer = setTimeout(() => { if (document.activeElement !== document.getElementById('search-input')) hideSuggest(); }, 150);
+  }
+
+  function onSuggestHover(e) {
+    const el = e.target && e.target.closest && e.target.closest('.sg-item');
+    if (!el) return;
+    const k = Number(el.dataset.i);
+    if (k !== sgIndex) setSuggestIndex(k, false);
+  }
+
+  function onSuggestClick(e) {
+    const el = e.target && e.target.closest && e.target.closest('.sg-item');
+    if (el) selectSuggest(Number(el.dataset.i));
+  }
+
   function refreshDisplay() {
     const container = document.getElementById('list-container');
     const searchVal = document.getElementById('search-input').value.toLowerCase().replace(/\s+/g, "");
@@ -507,7 +707,10 @@
       let badge;
       if (latch.names && latch.names.length > 0) {
         const t = latch.names.length > 1 ? '인근 단지 전체 동' : latch.names[0] + ' 전체 동';
-        badge = `<div class="latch-badge" onclick="releaseLatch(true)">📡 신호 끊김 — ${esc(t)}</div>`;
+        const prefix = latch.kind === 'jump' ? '📡 위치 튐 감지 — ' : '📡 신호 끊김 — ';
+        badge = `<div class="latch-badge" onclick="releaseLatch(true)">${prefix}${esc(t)}</div>`;
+      } else if (latch.kind === 'jump') {
+        badge = `<div class="latch-badge" onclick="releaseLatch(true)">📡 위치 튐 감지 — 확인 중 (터치 시 해제)</div>`;
       } else {
         badge = `<div class="latch-badge" onclick="releaseLatch(true)">[지하 진입 인식] 고정 중 (터치 시 해제)</div>`;
       }

@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>빠름빠름 전용앱 (테스트)</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root { --bg: #000; --accent: #00e5ff; --text: #fff; --card: #1c1c1e; --error: #ff453a; --common: #ffd60a; }
+    body { background: var(--bg); color: var(--text); font-family: sans-serif; margin: 0; padding: 0; height: 100vh; width: 100vw; overflow: hidden; }
+    #top-zone { position: fixed; top: 0; left: 0; width: 100%; background: #111; border-bottom: 2px solid #333; padding: 10px 0; z-index: 99999; }
+    .nav-bar { display: flex; justify-content: space-around; padding: 0 10px; margin-bottom: 10px; gap: 8px; }
+    .nav-btn { background: #222; border: 2px solid var(--accent); color: var(--accent); padding: 10px 0; border-radius: 10px; font-size: 15px; font-weight: bold; flex: 1; cursor: pointer; text-align: center; pointer-events: auto; }
+    .nav-btn.active { background: var(--accent); color: #000; }
+    .radius-selector { display: flex; justify-content: center; gap: 4px; padding: 0 5px; }
+    .rad-btn { background: #222; color: #777; border: 1px solid #444; font-size: 11px; padding: 8px 0; border-radius: 6px; font-weight: bold; cursor: pointer; width: 18%; text-align: center; pointer-events: auto; }
+    .rad-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+    #content-area { position: absolute; top: 105px; bottom: 65px; left: 0; width: 100%; overflow-y: auto; padding: 10px; box-sizing: border-box; z-index: 1; -webkit-overflow-scrolling: touch; }
+    
+    /* 마이크 공간 제거 후 검색창을 꽉 차게 변경 */
+    .search-wrap { display: none; margin-bottom: 10px; position: relative; }
+    .search-box { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; }
+    
+    .list-item { background: var(--card); padding: 12px; border-radius: 12px; margin-bottom: 8px; border: 1px solid #333; display: flex; justify-content: space-between; align-items: center; position: relative; }
+    .list-item.near { border-color: var(--accent); background: #081214; }
+    .dist-tag { position: absolute; top: 2px; left: 12px; font-size: 8px; color: var(--accent); font-weight: bold; }
+    .apt-info { text-align: left; max-width: 60%; }
+    .apt-name { font-size: 1.05em; font-weight: bold; color: var(--accent); }
+    .apt-dong { font-size: 0.85em; color: #999; }
+    .pw-info { text-align: right; }
+    .pw-text { font-size: 1.3em; font-weight: 900; color: var(--error); letter-spacing: 0.5px; }
+    .pw-text.common { color: var(--common); }
+    #footer-zone { position: fixed; bottom: 0; left: 0; width: 100%; background: #111; border-top: 2px solid #333; padding: 10px 0; text-align: center; z-index: 99999; }
+    .app-title { font-size: 0.8em; font-weight: 900; color: var(--accent); border: 1px solid var(--accent); padding: 2px 15px; border-radius: 50px; display: inline-block; margin-bottom: 5px; }
+    .legal-footer { color: var(--error); font-size: 10px; font-weight: bold; }
+    .fab { position: fixed; bottom: 85px; right: 20px; width: 60px; height: 60px; background: var(--accent); border-radius: 50%; border: none; color: #000; font-size: 35px; font-weight: bold; z-index: 50000; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; }
+    .delete-btn { background: #222; color: var(--error); border: 2.5px solid var(--error); padding: 5px 12px; border-radius: 8px; font-size: 12px; margin-top: 8px; cursor: pointer; }
+    
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 100000; padding: 20px; box-sizing: border-box; }
+    .modal-box { background: #1c1c1e; padding: 25px; border-radius: 20px; max-width: 450px; margin: 15% auto; text-align: center; border: 1px solid #333; box-shadow: 0 10px 30px rgba(0,0,0,0.8); }
+    input { width: 100%; padding: 14px; margin-top: 12px; background: #2c2c2e; border: 1px solid #444; border-radius: 12px; color: white; box-sizing: border-box; font-size: 16px; }
+    #uni-pw-input { display: none; margin-bottom: 15px; text-align: center; font-size: 20px; letter-spacing: 10px; font-weight: bold; background: #111; color: var(--accent); border-color: var(--accent); }
+    
+    .gps-row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+    .gps-status { display: none; position: sticky; top: 0; z-index: 2; background: #2a1c00; color: #ffb340; border: 1px solid #5a3d00; font-size: 12px; font-weight: bold; padding: 6px 10px; border-radius: 8px; margin-bottom: 8px; text-align: center; white-space: pre-line; }
+    .latch-badge { background: #2a2400; border: 1.5px solid var(--common); color: var(--common); font-size: 13px; font-weight: bold; padding: 10px; border-radius: 10px; margin-bottom: 8px; text-align: center; cursor: pointer; }
+    .approach-hint { color: #4a6a70; font-size: 12px; margin-top: 8px; }
+    #gps-acc-msg { font-size: 13px; margin-top: 8px; white-space: pre-line; }
+    .row-btn { width: 45px; height: 45px; border-radius: 10px; border: 1.5px solid #444; background: #333; color: white; font-weight: bold; font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  </style>
+</head>
+<body>
+
+  <div id="top-zone">
+    <div class="nav-bar">
+      <button id="btn-main" class="nav-btn active" onclick="switchMode('main')">운행 모드</button>
+      <button id="btn-manage" class="nav-btn" onclick="switchMode('manage')">검색</button>
+    </div>
+    <div class="radius-selector" id="radius-box">
+      <button class="rad-btn" onclick="setRadius(20)">20m</button>
+      <button class="rad-btn" onclick="setRadius(40)">40m</button>
+      <button class="rad-btn" onclick="setRadius(60)">60m</button>
+      <button class="rad-btn" onclick="setRadius(100)">100m</button>
+      <button class="rad-btn" onclick="setRadius(200)">200m</button>
+      <button class="rad-btn" onclick="setRadius(300)">300m</button>
+    </div>
+  </div>
+
+  <div id="content-area">
+    <div id="gps-status" class="gps-status"></div>
+    <div id="search-wrap" class="search-wrap">
+      <input type="text" id="search-input" class="search-box" placeholder="아파트/동 검색" oninput="refreshDisplay()">
+    </div>
+    <div id="list-container">
+      <div id="loading-msg" style="color:#555; text-align:center; margin-top:80px;">📍 현재 위치를 확인 중입니다...</div>
+    </div>
+  </div>
+
+  <div id="footer-zone">
+    <div class="app-title">빠름빠름 전용앱</div>
+    <div class="legal-footer">무단 배포 시 민·형사상 책임은 배포자 본인에게 있습니다.</div>
+  </div>
+
+  <button class="fab" onclick="showAddModal()">+</button>
+
+  <div id="uni-modal" class="modal-overlay">
+    <div class="modal-box">
+      <div id="uni-msg" style="color:var(--accent); font-weight:bold; margin-bottom:20px; font-size: 1.1em; line-height: 1.5; white-space: pre-wrap;">알림</div>
+      <input type="password" id="uni-pw-input" pattern="\d*" inputmode="numeric" placeholder="••••" maxlength="4">
+      <div style="display:flex; gap:15px;">
+        <button id="uni-no-btn" style="flex:1; padding:15px; border-radius:12px; border:none; background:#333; color:#fff; font-weight:bold; cursor:pointer;" onclick="closeUniModal()">취소</button>
+        <button id="uni-ok-btn" style="flex:1; padding:15px; border-radius:12px; border:none; background:var(--accent); color:#000; font-weight:bold; cursor:pointer;">확인</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="input-modal" class="modal-overlay">
+    <div class="modal-box" style="overflow-y: auto; max-height: 90vh;">
+      <h2 id="modal-title" style="color:var(--accent); margin:0 0 15px 0;">정보 관리</h2>
+      <input type="hidden" id="edit-row">
+      <input type="text" id="in-name" placeholder="아파트명">
+      <input type="text" id="in-dong" placeholder="동/라인 (예: 101동 또는 공통)">
+      <input type="text" id="in-pw" placeholder="비밀번호">
+      <input type="text" id="in-addr" placeholder="주소">
+      <div id="gps-container"></div>
+      <button onclick="getGPS()" style="width:100%; padding:15px; background:#333; color:var(--accent); border:2px solid var(--accent); border-radius:12px; font-weight:bold; margin-top:20px;">📍 현위치 좌표 가져오기</button>
+      <div id="gps-acc-msg"></div>
+      <input type="text" id="in-note" placeholder="특이사항">
+      <button onclick="saveData()" style="width:100%; padding:18px; background:var(--accent); border:none; border-radius:15px; font-weight:bold; font-size: 1.2em; margin-top:20px;">저장하기</button>
+      <button onclick="hideInputModal()" style="width:100%; background:none; border:none; color:#8e8e93; margin-top:20px;">취소</button>
+    </div>
+  </div>
+
+<script>
+  const SUPABASE_URL = 'https://saokvvmfdgybocpfamhl.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhb2t2dm1mZGd5Ym9jcGZhbWhsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0NDQ2NjAsImV4cCI6MjEwNzAyMDY2MH0.VDBrvAVaPBA89Iq56EGnaPV92iA96_UaJLphB5jLcCk';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  let allData = [], myLat, myLon, currentMode = 'main', searchRadius = 40;
+  let isGpsReady = false;
+  let gpsTimeout;
+
+  // ===== GPS 안정화 설정/상태 =====
+  const GPS_OPTS = { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 };
+  const ACC_WEAK = 30, ACC_REJECT = 80, ACC_COLLAPSE = 100, ACC_LATCH_EXIT = 25;
+  const MAX_SPEED = 40, STALE_MS = 15000, LATCH_IDLE_MS = 8000, LATCH_MAX_MS = 15 * 60 * 1000;
+  const HYST_MS = 20000, HYST_MIN_M = 15, RENDER_MIN_MOVE = 5, PREFETCH_R = 150;
+  const GPS_ERR_MSG = { 1: '위치 권한 거부됨 — 설정에서 위치 권한을 허용해 주세요', 2: '위치 신호 없음 — 마지막 위치 유지 중', 3: '위치 응답 지연 — 마지막 위치 유지 중' };
+  let watchId = null, myAcc = null, lastAcc = null, gpsErr = null;
+  let lastGood = null, pendingJump = null;       // lastGood = {lat, lon, acc, t}
+  let usingSavedPos = null;                      // GPS 미확보 시 사용 중인 저장 위치
+  let latch = null, latchSuppressed = false;     // 지하 진입 고정 상태
+  let shownKeys = new Set(), lastInAt = new Map(), lastShown = [], lastRender = null;
+  let dataVer = 0, suppressNearFx = false;
+  const prefetch = new Map();                    // 아파트명 -> 사전 준비된 동 목록
+  let wakeLock = null, wakeWanted = false;
+
+  window.onload = () => {
+    const savedRad = localStorage.getItem('aptSearchRadius');
+    if(savedRad) setRadius(parseInt(savedRad)); else setRadius(40);
+    loadData();
+
+    gpsTimeout = setTimeout(() => {
+      isGpsReady = true;
+      refreshDisplay();
+    }, 2500);
+
+    startWatch();
+    setInterval(watchdog, 1000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        startWatch();
+        if (wakeWanted) requestWakeLock();
+      }
+    });
+
+    history.pushState({page: 'main'}, '', '');
+  };
+
+  function startWatch() {
+    if (!navigator.geolocation) { onPosErr({ code: 2 }); return; }
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = navigator.geolocation.watchPosition(onPos, onPosErr, GPS_OPTS);
+  }
+
+  function onPos(p) {
+    const c = p.coords, now = Date.now();
+    const lat = c.latitude, lon = c.longitude;
+    const acc = Number.isFinite(c.accuracy) ? c.accuracy : 999;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    gpsErr = null; lastAcc = acc;
+    if (acc > ACC_COLLAPSE) maybeLatch();
+    if (acc > ACC_REJECT) { updateStatus(); return; }   // 정확도 불량: 위치 갱신 거부
+
+    // 순간이동 거부: 비정상 속도면 보류, 연속 2회 같은 지점이면 확정
+    if (lastGood) {
+      const dt = Math.max((now - lastGood.t) / 1000, 1);
+      if (distM(lastGood.lat, lastGood.lon, lat, lon) / dt > MAX_SPEED) {
+        if (pendingJump && distM(pendingJump.lat, pendingJump.lon, lat, lon) <= Math.max(30, acc, pendingJump.acc)) {
+          if (++pendingJump.count < 2) { updateStatus(); return; }
+        } else {
+          pendingJump = { lat, lon, acc, count: 0 };
+          updateStatus(); return;
+        }
+      }
+    }
+    pendingJump = null;
+    acceptPos(lat, lon, acc, now);
+  }
+
+  function acceptPos(lat, lon, acc, t) {
+    myLat = lat; myLon = lon; myAcc = acc;
+    lastGood = { lat, lon, acc, t };
+    usingSavedPos = null; latchSuppressed = false;
+    try { localStorage.setItem('last_good_pos', JSON.stringify({ lat, lon, t })); } catch (e) {}
+    if (!isGpsReady) { clearTimeout(gpsTimeout); isGpsReady = true; }
+    if (latch && acc <= ACC_LATCH_EXIT) latch = null;
+    updateStatus();
+    refreshDisplay();
+  }
+
+  function onPosErr(e) {
+    gpsErr = (e && e.code) || 2;
+    maybeLatch();
+    if (!isGpsReady) { clearTimeout(gpsTimeout); isGpsReady = true; refreshDisplay(); }
+    updateStatus();
+  }
+
+  // 1초 감시: 끊김 배너, 지하 고정 진입/만료, 이탈 지연 항목 정리
+  function watchdog() {
+    const now = Date.now();
+    if (latch && now - latch.since > LATCH_MAX_MS) releaseLatch(true);
+    else if (lastGood && now - lastGood.t > LATCH_IDLE_MS) maybeLatch();
+    if (currentMode === 'main' && !latch && lastShown.some(r => !r.near)) refreshDisplay();
+    updateStatus();
+  }
+
+  // 단지 반경 안에 머무는 중일 때만 현재 표시된 카드 고정
+  function maybeLatch() {
+    if (latch || latchSuppressed || currentMode !== 'main' || !lastGood) return;
+    if (!lastShown.some(r => r.near)) return;
+    latch = { items: lastShown.slice(), since: Date.now() };
+    refreshDisplay();
+  }
+
+  function releaseLatch(manual) {
+    latch = null;
+    if (manual) latchSuppressed = true;   // 새 위치가 들어올 때까지 재고정 안 함
+    lastRender = null;
+    refreshDisplay();
+    updateStatus();
+  }
+
+  function getSavedPos() {
+    try {
+      const s = JSON.parse(localStorage.getItem('last_good_pos') || 'null');
+      if (s && Number.isFinite(s.lat) && Number.isFinite(s.lon)) return s;
+    } catch (e) {}
+    return null;
+  }
+
+  function fmtAgo(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + '초 전';
+    if (s < 3600) return Math.round(s / 60) + '분 전';
+    return Math.round(s / 3600) + '시간 전';
+  }
+
+  function updateStatus() {
+    const el = document.getElementById('gps-status');
+    if (!el) return;
+    const msgs = [], now = Date.now();
+    if (currentMode === 'main') {
+      const stale = lastGood && now - lastGood.t > STALE_MS;
+      if (gpsErr) msgs.push(GPS_ERR_MSG[gpsErr] || '위치 오류');
+      if (stale) msgs.push(`GPS 끊김 · ${Math.round((now - lastGood.t) / 1000)}초 전 위치 기준`);
+      else if (usingSavedPos) msgs.push(`이전 위치 기준 (${fmtAgo(now - usingSavedPos.t)})`);
+      if (!gpsErr && !stale && lastAcc != null && lastAcc > ACC_WEAK) msgs.push(`신호 약함 (±${Math.round(lastAcc)}m)` + (lastAcc > ACC_REJECT ? ' · 위치 갱신 보류' : ''));
+      if (pendingJump) msgs.push('위치 급변 감지 · 확인 중');
+    }
+    const txt = msgs.join('\n');
+    if (el.textContent !== txt) el.textContent = txt;
+    el.style.display = txt ? 'block' : 'none';
+  }
+
+  async function requestWakeLock() {
+    wakeWanted = true;
+    try {
+      if ('wakeLock' in navigator && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch (e) { wakeLock = null; }
+  }
+
+  function onNearEntry() {
+    try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
+    requestWakeLock();
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function keyOf(i) { return i.id + '\u0001' + i.name + '\u0001' + i.dong; }
+
+  function setRadius(val) {
+    searchRadius = val; localStorage.setItem('aptSearchRadius', val);
+    const buttons = document.querySelectorAll('.rad-btn');
+    buttons.forEach(btn => { btn.classList.toggle('active', btn.innerText === val + 'm'); });
+    lastInAt.clear();          // 반경 변경 시 이탈 지연 초기화
+    suppressNearFx = true;     // 반경 변경으로 늘어난 항목엔 진동 안 함
+    refreshDisplay();
+    suppressNearFx = false;
+  }
+
+  window.onpopstate = function(event) {
+    if (document.getElementById('input-modal').style.display === 'block') { hideInputModal(); } 
+    else if (currentMode === 'manage') { switchMode('main'); }
+    history.pushState({page: 'main'}, '', '');
+  };
+
+  function showMsg(msg, okCallback, showCancel = false, isPasswordMode = false) {
+    document.getElementById('uni-msg').innerText = msg;
+    document.getElementById('uni-msg').style.color = isPasswordMode ? "var(--error)" : "var(--accent)";
+    document.getElementById('uni-no-btn').style.display = showCancel ? 'block' : 'none';
+    
+    const pwInput = document.getElementById('uni-pw-input');
+    if (isPasswordMode) {
+      pwInput.value = "";
+      pwInput.style.display = 'block';
+      setTimeout(() => pwInput.focus(), 100);
+    } else {
+      pwInput.style.display = 'none';
+    }
+    
+    document.getElementById('uni-modal').style.display = 'block';
+    document.getElementById('uni-ok-btn').onclick = () => { 
+      const inputPwValue = pwInput.value;
+      closeUniModal(); 
+      if(okCallback) okCallback(inputPwValue); 
+    };
+  }
+  
+  function closeUniModal() { 
+    document.getElementById('uni-pw-input').style.display = 'none';
+    document.getElementById('uni-modal').style.display = 'none'; 
+  }
+  
+  async function loadData() { 
+    const localBackup = localStorage.getItem('offline_apt_db');
+    if (localBackup) {
+      try { allData = JSON.parse(localBackup); } catch (e) { allData = []; }
+      onDataChanged();
+    }
+    const { data, error } = await sb.from('apt_passwords').select('*').order('created_at');
+    if (error) { showMsg('데이터 로드 실패: ' + error.message); return; }
+    const res = (data || []).map(r => ({ id: r.id, name: r.apt_name || '', dong: r.dong_line || '', pw: r.password || '', addr: r.address || '', lat: String(r.lat || ''), lon: String(r.lng || ''), note: r.notes || '' }));
+    if (res && res.length > 0) {
+      allData = res;
+      localStorage.setItem('offline_apt_db', JSON.stringify(res));
+      onDataChanged();
+    }
+  }
+
+  function onDataChanged() {
+    dataVer++; prefetch.clear(); lastRender = null;
+    refreshDisplay();
+  }
+  
+  function switchMode(mode) { 
+    currentMode = mode; 
+    document.getElementById('btn-main').classList.toggle('active', mode === 'main');
+    document.getElementById('btn-manage').classList.toggle('active', mode === 'manage'); 
+    document.getElementById('search-wrap').style.display = (mode === 'manage') ? 'block' : 'none'; 
+    document.getElementById('radius-box').style.display = (mode === 'main') ? 'flex' : 'none';
+    lastRender = null;
+    refreshDisplay();
+    updateStatus();
+  }
+  
+  function levenshtein(a, b) {
+    let m = [], i, j, min = Math.min;
+    if (!(a && b)) return (b || a).length;
+    for (i = 0; i <= b.length; m[i] = [i++]);
+    for (j = 0; j <= a.length; m[0][j] = j++);
+    for (i = 1; i <= b.length; i++) {
+      for (j = 1; j <= a.length; j++) {
+        m[i][j] = b.charAt(i - 1) == a.charAt(j - 1) ? m[i - 1][j - 1] : m[i][j] = min(m[i - 1][j - 1] + 1, min(m[i][j - 1] + 1, m[i - 1][j] + 1));
+      }
+    }
+    return m[b.length][a.length];
+  }
+
+  // 글자 오타 교정 스코어 계산 (100% 일치 실패 시에만 호출됨)
+  function getMatchScore(query, item) {
+    const targetStr = (item.name + item.dong + item.addr).toLowerCase().replace(/\s+/g, "");
+
+    // 숫자가 틀리면 무조건 탈락 (오타 검사 제외)
+    const queryNums = query.match(/\d+/g);
+    if (queryNums) {
+      for (let i = 0; i < queryNums.length; i++) {
+        if (!targetStr.includes(queryNums[i])) return 0;
+      }
+    }
+
+    // 숫자를 제외한 문자만 추출해서 유사도 검사
+    const queryLetters = query.replace(/\d+/g, "");
+    if (queryLetters.length < 2) return 0; // 한 글자는 오타 검사 안 함
+
+    let maxErr = queryLetters.length >= 4 ? 2 : 1;
+    let bestDist = 999;
+    const targetLetters = targetStr.replace(/\d+/g, "");
+
+    for (let len = queryLetters.length - 1; len <= queryLetters.length + 1; len++) {
+      if (len < 2 || len > targetLetters.length) continue;
+      for (let i = 0; i <= targetLetters.length - len; i++) {
+        let dist = levenshtein(queryLetters, targetLetters.substr(i, len));
+        if (dist < bestDist) bestDist = dist;
+      }
+    }
+
+    if (bestDist <= maxErr) {
+      return 50 - bestDist; 
+    }
+
+    return 0;
+  }
+  
+  function refreshDisplay() {
+    const container = document.getElementById('list-container');
+    const searchVal = document.getElementById('search-input').value.toLowerCase().replace(/\s+/g, "");
+    
+    if (!allData || allData.length === 0) return;
+
+    let filtered = [];
+    if (currentMode === 'main') {
+      renderMain(container);
+      return;
+    } else {
+      if (searchVal) {
+        // [1단계 필터] 검색어와 100% 완벽하게 일치하는 데이터 먼저 탐색
+        let exactMatches = allData.filter(i => {
+          const targetStr = (i.name + i.dong + i.addr).toLowerCase().replace(/\s+/g, "");
+          return targetStr.includes(searchVal);
+        });
+
+        if (exactMatches.length > 0) {
+          // 정확히 일치하는 데이터(포레나 101동)가 발견되면, 오타 알고리즘(샬레 101동) 가동 완전 차단
+          filtered = exactMatches.sort((a,b) => a.name.localeCompare(b.name));
+        } else {
+          // [2단계 필터] 완벽하게 일치하는 데이터가 없을 때만 오타 보정 알고리즘 작동
+          let scoredItems = [];
+          allData.forEach(i => {
+            let score = getMatchScore(searchVal, i);
+            if (score > 0) scoredItems.push({ item: i, score: score });
+          });
+
+          scoredItems.sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            return a.item.name.localeCompare(b.item.name);
+          });
+
+          filtered = scoredItems.map(d => d.item);
+        }
+      } else {
+        filtered = [...allData].sort((a,b) => a.name.localeCompare(b.name));
+      }
+    }
+    
+    lastRender = null;
+    const hasFix = Number.isFinite(myLat) && Number.isFinite(myLon);
+    const rows = filtered.map(item => {
+      const d = hasFix ? getDist(item.lat, item.lon) : 999999;
+      return { item, d, near: hasFix && d <= searchRadius };
+    });
+    if (rows.length === 0) {
+      container.innerHTML = `<div style="color:#555; text-align:center; margin-top:50px;">${searchVal ? '검색 결과가 없습니다.' : '주변 ' + searchRadius + 'm 이내 없음'}</div>`;
+    } else {
+      container.innerHTML = rows.map(r => cardHtml(r, true)).join('');
+    }
+  }
+
+  // 운행 모드 렌더링: 거리 1회 계산 → 이탈 지연 필터 → 정렬 → (변화 없으면) 렌더 생략
+  function renderMain(container) {
+    if (latch) {
+      if (lastRender && lastRender.latch === latch) return;
+      container.innerHTML = `<div class="latch-badge" onclick="releaseLatch(true)">[지하 진입 인식] 고정 중 (터치 시 해제)</div>` + latch.items.map(r => cardHtml(r, false)).join('');
+      lastRender = { latch };
+      return;
+    }
+
+    const hasFix = Number.isFinite(myLat) && Number.isFinite(myLon);
+    if (!isGpsReady && !hasFix) {
+      container.innerHTML = `<div id="loading-msg" style="color:#555; text-align:center; margin-top:80px;">📍 현재 위치를 확인 중입니다...</div>`;
+      lastRender = null;
+      return;
+    }
+    const ref = hasFix ? { lat: myLat, lon: myLon } : getSavedPos();
+    usingSavedPos = hasFix ? null : ref;
+    if (!ref) {
+      container.innerHTML = `<div style="color:#555; text-align:center; margin-top:80px; line-height:1.6;">📡 GPS 대기 중 — 검색 모드를 이용하세요</div>`;
+      lastRender = null; lastShown = [];
+      updateStatus();
+      return;
+    }
+
+    const now = Date.now();
+    const exitR = searchRadius + Math.max(HYST_MIN_M, hasFix && Number.isFinite(myAcc) ? myAcc : 0);
+    const scored = allData.map(item => ({ item, k: keyOf(item), d: getDist(item.lat, item.lon, ref.lat, ref.lon) }));
+    scored.forEach(s => { if (s.d <= searchRadius) lastInAt.set(s.k, now); });
+    lastInAt.forEach((t, k) => { if (now - t > HYST_MS) lastInAt.delete(k); });
+    const rows = scored
+      .filter(s => s.d <= searchRadius || (shownKeys.has(s.k) && s.d <= exitR && lastInAt.has(s.k)))
+      .sort((a, b) => a.d - b.d);
+    rows.forEach(r => { r.near = r.d <= searchRadius; });
+    const approach = updatePrefetch(scored, rows, now);
+
+    if (hasFix && !suppressNearFx && rows.some(r => r.near && !shownKeys.has(r.k))) onNearEntry();
+    shownKeys = new Set(rows.map(r => r.k));
+    lastShown = rows;
+
+    const approachKey = approach ? approach.name + '@' + Math.round(approach.d / 10) * 10 : '';
+    const sig = [searchRadius, dataVer, approachKey].concat(rows.map(r => r.k + (r.near ? '*' : ''))).join('\u0002');
+    if (lastRender && lastRender.sig === sig && distM(lastRender.lat, lastRender.lon, ref.lat, ref.lon) < RENDER_MIN_MOVE) return;
+    lastRender = { sig, lat: ref.lat, lon: ref.lon };
+
+    if (rows.length === 0) {
+      const hint = approach ? `<div class="approach-hint">접근 중 · ${esc(approach.name)} 약 ${Math.round(approach.d / 10) * 10}m</div>` : '';
+      container.innerHTML = `<div style="color:#555; text-align:center; margin-top:50px;">주변 ${searchRadius}m 이내 없음${hint}</div>`;
+    } else {
+      container.innerHTML = rows.map(r => cardHtml(r, false)).join('');
+    }
+  }
+
+  // 2단계 지오펜스: 150m 안에 들어온 단지는 동 목록을 미리 정렬·HTML 준비해 둔다
+  function updatePrefetch(scored, rows, now) {
+    const near = new Map();
+    scored.forEach(s => {
+      if (s.d > PREFETCH_R) return;
+      const n = String(s.item.name);
+      if (!near.has(n) || s.d < near.get(n)) near.set(n, s.d);
+    });
+    near.forEach((d, name) => {
+      const pc = prefetch.get(name);
+      if (pc) { pc.t = now; return; }
+      const list = allData.filter(i => String(i.name) === name)
+        .sort((a, b) => String(a.dong).localeCompare(String(b.dong), 'ko', { numeric: true }));
+      prefetch.set(name, { t: now, list, html: new Map(list.map(i => [keyOf(i), buildBody(i, false)])) });
+    });
+    prefetch.forEach((pc, name) => { if (now - pc.t > 60000) prefetch.delete(name); });
+
+    const shownNames = new Set(rows.map(r => String(r.item.name)));
+    let best = null;
+    near.forEach((d, name) => { if (!shownNames.has(name) && (!best || d < best.d)) best = { name, d }; });
+    return best;
+  }
+
+  function buildBody(i, manage) {
+    const dong = String(i.dong);
+    return `<div class="apt-info"><div class="apt-name">${esc(i.name)}</div><div class="apt-dong">${esc(dong)}</div></div><div class="pw-info"><div class="pw-text ${dong.includes("공통") ? 'common' : ''}">${esc(i.pw)}</div>${manage ? `<button class="delete-btn" onclick="deleteData('${esc(i.id)}', event)">삭제</button>` : ''}</div>`;
+  }
+
+  function cardHtml(r, manage) {
+    const i = r.item;
+    const pc = !manage && prefetch.get(String(i.name));
+    const body = (pc && pc.html.get(keyOf(i))) || buildBody(i, manage);
+    return `<div class="list-item ${r.near ? 'near' : ''}" onclick="showEditModal(${esc(JSON.stringify(i))})">${r.near ? `<span class="dist-tag">${Math.round(r.d)}m</span>` : ''}${body}</div>`;
+  }
+
+  // 위도 보정 평면 근사 거리(m)
+  function distM(lat1, lon1, lat2, lon2) {
+    const dx = (lon2 - lon1) * 111000 * Math.cos(lat1 * Math.PI / 180);
+    const dy = (lat2 - lat1) * 111000;
+    return Math.hypot(dx, dy);
+  }
+
+  function getDist(latStr, lonStr, refLat = myLat, refLon = myLon) {
+    if (!latStr || !Number.isFinite(refLat) || !Number.isFinite(refLon)) return 999999;
+    const lats = String(latStr).split('|'), lons = String(lonStr).split('|'); let minD = 999999;
+    lats.forEach((lt, idx) => {
+      const a = parseFloat(lt), o = parseFloat(lons[idx]);
+      if (!Number.isFinite(a) || !Number.isFinite(o)) return;
+      const d = distM(refLat, refLon, a, o);
+      if (d < minD) minD = d;
+    });
+    return minD;
+  }
+  
+  function deleteData(id, event) { 
+    event.stopPropagation(); 
+    if (navigator.vibrate) { navigator.vibrate([200, 100, 200]); }
+    
+    showMsg("데이터가 완전히 삭제됩니다.\n보안 비밀번호(4자리)를 입력해 주십시오.", async (pw) => {
+      if(!pw) { showMsg("비밀번호 검증이 취소되었습니다."); return; }
+      try {
+        const res = await fetch(SUPABASE_URL + '/functions/v1/apt-admin', { method: 'POST', headers: { 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw, id }) });
+        const j = await res.json();
+        showMsg(j.msg); if (j.success) loadData();
+      } catch (e) { showMsg('삭제 요청 실패: 네트워크 오류'); }
+    }, true, true);
+  }
+  
+  // 좌표 입력 검증: 빈 쌍 제거, 위도 -90~90 / 경도 -180~180, 위도·경도 개수 일치
+  function collectCoords() {
+    const lats = [], lons = [];
+    const latEls = document.querySelectorAll('.lat-val'), lonEls = document.querySelectorAll('.lon-val');
+    if (latEls.length !== lonEls.length) return { err: "위도와 경도의 개수가 일치하지 않습니다." };
+    for (let idx = 0; idx < latEls.length; idx++) {
+      const a = latEls[idx].value.trim(), o = lonEls[idx].value.trim();
+      if (!a && !o) continue;
+      if (!a || !o) return { err: "위도와 경도는 쌍으로 입력해야 합니다." };
+      const la = Number(a), lo = Number(o);
+      if (!Number.isFinite(la) || la < -90 || la > 90) return { err: "위도 값이 올바르지 않습니다 (-90 ~ 90):\n" + a };
+      if (!Number.isFinite(lo) || lo < -180 || lo > 180) return { err: "경도 값이 올바르지 않습니다 (-180 ~ 180):\n" + o };
+      lats.push(a); lons.push(o);
+    }
+    return { lat: lats.join('|'), lon: lons.join('|') };
+  }
+
+  // 주소 → 좌표 (기존 GAS 서버측 Maps.newGeocoder 대체)
+  async function geocodeAddr(addr) {
+    const q = addr.includes('포항') ? addr : '경상북도 포항시 ' + addr;
+    try {
+      const res = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=' + encodeURIComponent(q));
+      const j = await res.json();
+      return (j && j[0]) ? { lat: j[0].lat, lon: j[0].lon } : null;
+    } catch (e) { return null; }
+  }
+
+  async function saveData() {
+    const c = collectCoords();
+    if (c.err) { showMsg(c.err); return; }
+    const d = { id: document.getElementById('edit-row').value, name: document.getElementById('in-name').value, dong: document.getElementById('in-dong').value, pw: document.getElementById('in-pw').value, addr: document.getElementById('in-addr').value, lat: c.lat, lon: c.lon, note: document.getElementById('in-note').value };
+    if ((!d.lat || !d.lon) && d.addr) {
+      const g = await geocodeAddr(d.addr);
+      if (g) { d.lat = g.lat; d.lon = g.lon; }
+    }
+    const payload = { apt_name: d.name, dong_line: d.dong, password: d.pw, address: d.addr, lat: d.lat, lng: d.lon, notes: d.note };
+    const editId = document.getElementById('edit-row').value;
+    const q = editId ? sb.from('apt_passwords').update(payload).eq('id', editId) : sb.from('apt_passwords').insert([payload]);
+    const { error } = await q;
+    if (error) { showMsg('저장 실패: ' + error.message); return; }
+    hideInputModal(); loadData(); showMsg('성공적으로 저장되었습니다!');
+  }
+  
+  function addGpsRow(lat = "", lon = "") {
+    const container = document.getElementById('gps-container');
+    const isFirst = container.children.length === 0;
+    const div = document.createElement('div'); div.className = 'gps-row';
+    let buttons = isFirst ? `<button type="button" class="row-btn" style="color:var(--error);" onclick="removeLastGpsRow()">-</button><button type="button" class="row-btn" style="color:var(--accent);" onclick="addGpsRow()">+</button>` : `<div style="width:45px;"></div><div style="width:45px;"></div>`;
+    div.innerHTML = `<input type="text" class="lat-val" placeholder="위도" value="${esc(lat)}"><input type="text" class="lon-val" placeholder="경도" value="${esc(lon)}">${buttons}`;
+    container.appendChild(div);
+  }
+  function removeLastGpsRow() { const rows = document.querySelectorAll('.gps-row'); if (rows.length > 1) { rows[rows.length - 1].remove(); } else { showMsg("최소 1개의 좌표는 필요합니다."); } }
+  function setAccMsg(text, color) { const el = document.getElementById('gps-acc-msg'); el.textContent = text; el.style.color = color || '#999'; }
+  function getGPS() {
+    if (!navigator.geolocation) { setAccMsg("이 기기에서는 위치를 사용할 수 없습니다.", "var(--error)"); return; }
+    setAccMsg("📡 위치 측정 중... (최대 15초)");
+    navigator.geolocation.getCurrentPosition(p => {
+      const rows = document.querySelectorAll('.gps-row'); const lastRow = rows[rows.length - 1]; const latIn = lastRow.querySelector('.lat-val'); const lonIn = lastRow.querySelector('.lon-val');
+      if (latIn.value || lonIn.value) { addGpsRow(p.coords.latitude, p.coords.longitude); } else { latIn.value = p.coords.latitude; lonIn.value = p.coords.longitude; }
+      const acc = Math.round(p.coords.accuracy);
+      if (acc > 20) setAccMsg(`측정 정확도 ±${acc}m\n⚠️ 정확도 낮음, 출입구 앞에서 재측정 권장`, "var(--error)");
+      else setAccMsg(`측정 정확도 ±${acc}m`, "var(--accent)");
+    }, err => {
+      const msg = { 1: "위치 권한이 거부되었습니다.\n설정에서 위치 권한을 허용해 주세요.", 2: "현재 위치를 확인할 수 없습니다.\n실외·출입구 앞에서 다시 시도해 주세요.", 3: "위치 측정 시간이 초과되었습니다(15초).\n다시 시도해 주세요." }[err && err.code] || "위치를 가져오지 못했습니다.";
+      setAccMsg(msg, "var(--error)");
+      showMsg(msg);
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  }
+  function showAddModal() { ['edit-row','in-name','in-dong','in-pw','in-addr','in-note'].forEach(id => document.getElementById(id).value = ""); document.getElementById('gps-container').innerHTML = ""; setAccMsg(""); addGpsRow(); document.getElementById('input-modal').style.display = 'block'; }
+  function showEditModal(i) {
+    setAccMsg("");
+    document.getElementById('edit-row').value = i.id || ''; document.getElementById('in-name').value = i.name; document.getElementById('in-dong').value = i.dong; document.getElementById('in-pw').value = i.pw;
+    document.getElementById('in-addr').value = i.addr; document.getElementById('in-note').value = i.note;
+    const container = document.getElementById('gps-container'); container.innerHTML = "";
+    const lats = String(i.lat).split('|'), lons = String(i.lon).split('|');
+    lats.forEach((lt, idx) => addGpsRow(lt, lons[idx] || ""));
+    if (lats.length === 0) addGpsRow();
+    document.getElementById('input-modal').style.display = 'block';
+  }
+  function hideInputModal() { document.getElementById('input-modal').style.display = 'none'; }
+</script>
+</body>
+</html>

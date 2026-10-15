@@ -1158,11 +1158,7 @@
         return;
       }
     }
-    if (vAction === 'candidates') {
-      voiceQuery = null;
-      renderVoiceCandidates(document.getElementById('list-container'), best.text, cands);
-      return;
-    }
+    // 'candidates' 분기 제거: 위 병합 결과에 cands가 항상 포함돼 merged가 비지 않으므로 도달 불가
     voiceQuery = { text: best.text, alts: ranked.slice(1).filter(r => r.top).map(r => ({ text: r.text, name: String(r.top.item.name || '') })) };
     input.focus(); refreshDisplay();
   }

@@ -336,11 +336,9 @@
     const { data, error } = await sb.from('apt_passwords').select('*').order('created_at');
     if (error) { showMsg('데이터 로드 실패: ' + error.message); return; }
     const res = (data || []).map(r => ({ id: r.id, name: r.apt_name || '', dong: r.dong_line || '', pw: r.password || '', addr: r.address || '', lat: String(r.lat || ''), lon: String(r.lng || ''), note: r.notes || '' }));
-    if (res && res.length > 0) {
-      allData = res;
-      localStorage.setItem('offline_apt_db', JSON.stringify(res));
-      onDataChanged();
-    }
+    allData = res;
+    localStorage.setItem('offline_apt_db', JSON.stringify(res));
+    onDataChanged();
   }
 
   function onDataChanged() {
@@ -569,6 +567,7 @@
   
   function deleteData(id, event) { 
     event.stopPropagation(); 
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id))) { showMsg('잘못된 요청입니다.'); return; }
     if (navigator.vibrate) { navigator.vibrate([200, 100, 200]); }
     
     showMsg("데이터가 완전히 삭제됩니다.\n보안 비밀번호(4자리)를 입력해 주십시오.", async (pw) => {

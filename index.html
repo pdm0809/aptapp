@@ -19,8 +19,8 @@
     
     /* 마이크 공간 제거 후 검색창을 꽉 차게 변경 */
     .search-wrap { display: none; margin-bottom: 10px; position: relative; }
-    .search-box { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; padding-right: 52px; }
-    .mic-btn { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; padding: 0; background: transparent; border: none; border-radius: 50%; font-size: 20px; line-height: 40px; cursor: pointer; color: #fff; z-index: 2; }
+    .search-box { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #444; background: #222; color: #fff; font-size: 16px; box-sizing: border-box; padding-right: 96px; }
+    .mic-btn { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: auto; height: 36px; padding: 0 14px; background: rgba(255,255,255,0.08); border: 1px solid #555; border-radius: 18px; font-size: 13px; line-height: 34px; white-space: nowrap; cursor: pointer; color: #fff; z-index: 2; }
     .mic-btn.listening { color: #ff5a5a; animation: micPulse 1.2s infinite; }
     @keyframes micPulse { 0% { box-shadow: 0 0 0 0 rgba(255,60,60,.6); } 70% { box-shadow: 0 0 0 12px rgba(255,60,60,0); } 100% { box-shadow: 0 0 0 0 rgba(255,60,60,0); } }
     
@@ -73,7 +73,7 @@
     <div id="gps-status" class="gps-status"></div>
     <div id="search-wrap" class="search-wrap">
       <input type="text" id="search-input" class="search-box" placeholder="아파트/동 검색" autocomplete="off" oninput="refreshDisplay()">
-      <button type="button" id="mic-btn" class="mic-btn" style="display:none" aria-label="음성 검색">🎤</button>
+      <button type="button" id="mic-btn" class="mic-btn" style="display:none" aria-label="음성 검색">음성인식</button>
     </div>
     <div id="list-container">
       <div id="loading-msg" style="color:#555; text-align:center; margin-top:80px;">📍 현재 위치를 확인 중입니다...</div>

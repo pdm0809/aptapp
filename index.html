@@ -259,14 +259,18 @@
       });
     }
     if (names.length === 0) return { rows: [], names: [] };
-    const rows = near.slice();  // 기존 거리순 유지
-    const nearIds = new Set(near.map(r => r.item.id));
+    // 래치 표시: 단지별 그룹 + 동 번호 오름차순 (101동부터). 가까운 동 거리순 우선은 적용하지 않음.
+    const nearById = new Map(near.map(r => [r.item.id, r]));
     const posOk = refPos && Number.isFinite(refPos.lat) && Number.isFinite(refPos.lon);
+    const rows = [];
     names.forEach(n => {
       allData
-        .filter(item => String(item.name || '') === n && !nearIds.has(item.id))
+        .filter(item => String(item.name || '') === n)
         .sort(cmpDong)
-        .forEach(item => rows.push({ item, d: posOk ? getDist(item.lat, item.lon, refPos.lat, refPos.lon) : 999999, near: false }));
+        .forEach(item => {
+          const prev = nearById.get(item.id);
+          rows.push({ item, d: prev ? prev.d : (posOk ? getDist(item.lat, item.lon, refPos.lat, refPos.lon) : 999999), near: !!prev });
+        });
     });
     return { rows, names };
   }

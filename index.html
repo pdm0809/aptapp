@@ -1915,7 +1915,27 @@
   function hideInputModal() { document.getElementById('input-modal').style.display = 'none'; }
 </script>
 <script>
-if ('serviceWorker' in navigator) { window.addEventListener('load', function() { navigator.serviceWorker.register('sw.js'); }); }
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('sw.js').then(function(reg) {
+      // 새 SW가 설치되면 자동으로 교체하고 새로고침 (수동 업데이트 불필요)
+      reg.addEventListener('updatefound', function() {
+        var nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', function() {
+          if (nw.state === 'activated' && navigator.serviceWorker.controller && !window.__swReloaded) {
+            window.__swReloaded = true;
+            location.reload();
+          }
+        });
+      });
+    });
+  });
+  // 대기 중이던 새 SW가 제어권을 가져가면 새로고침
+  navigator.serviceWorker.addEventListener('controllerchange', function() {
+    if (!window.__swReloaded) { window.__swReloaded = true; location.reload(); }
+  });
+}
 </script>
 </body>
 </html>

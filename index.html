@@ -222,6 +222,8 @@
   let voiceQuery = null;           // P5: 음성 확정 검색어 {text, alts} — refreshDisplay에서 1회 소비
   let voiceView = null;            // 음성 전용 화면(무매칭/후보) {text, html} — 입력값이 그대로인 동안 GPS 재렌더에도 유지
   let voiceCandList = [], voiceSuggestList = [];
+  let voiceDongPin = [];           // 음성에서 들린 "NNN동" (DB 존재분만) — 단지 화면에서 해당 동 우선 표시
+  let voicePinOff = false;         // 위치 폴백 칩(주변 단지)은 핀 미적용
   let coarseLat = null, coarseLon = null, coarseAcc = null, coarseT = null;  // 음성 검색 위치 가산 전용 (ACC_REJECT 이전 모든 유효 fix). 표시/WPS/래치에서 사용 금지
 
   window.onload = () => {
@@ -1144,8 +1146,10 @@
   // 음성 확정: P1 정규화 → P2 n-best 결합 → P8 명확성 게이트 (expand / candidates / none→P5)
   function handleVoiceFinal(input, results, finalT) {
     const ranked = currentMode === 'manage' ? rankVoiceAlts(collectVoiceAlts(results), searchItemsWithScores) : [];
-    if (!ranked.length) { input.value = finalT.trim(); input.focus(); refreshDisplay(); return; }  // 기존 흐름
+    if (!ranked.length) { voiceDongPin = []; voicePinOff = false; input.value = finalT.trim(); input.focus(); refreshDisplay(); return; }  // 기존 흐름
     const best = ranked[0];
+    voiceDongPin = voiceDongPins(best.text);
+    voicePinOff = false;
     input.value = best.text;
     voiceView = null;
     const cands = topComplexes(best.scored, VOICE_CAND_N);
@@ -1159,17 +1163,56 @@
       }
     }
     // 'candidates' 분기 제거: 위 병합 결과에 cands가 항상 포함돼 merged가 비지 않으므로 도달 불가
-    voiceQuery = { text: best.text, alts: ranked.slice(1).filter(r => r.top).map(r => ({ text: r.text, name: String(r.top.item.name || '') })) };
+    voiceQuery = { text: best.text, alts: ranked.slice(1).filter(r => r.top).map(r => ({ text: r.text, name: String(r.top.item.name || '') })), pinDongs: voiceDongPin };
     input.focus(); refreshDisplay();
   }
 
   function voiceHeardHtml(text) { return `<div class="voice-heard">들은 내용: <b>${esc(text)}</b></div>`; }
 
+  // 음성 동 핀: "불의 날 115동" → ['115동'] (DB의 name+dong+addr에 존재하는 토큰만, 중복 제거·순서 유지)
+  function voiceDongPins(text) {
+    const out = [];
+    String(text || '').split(/\s+/).forEach(t => {
+      if (!/^\d+동$/.test(t) || out.includes(t)) return;
+      if ((allData || []).some(i => (String(i.name || '') + String(i.dong || '') + String(i.addr || '')).includes(t))) out.push(t);
+    });
+    return out;
+  }
+  function dongPinIndex(dong, pins) {
+    const d = String(dong || '').trim();
+    for (let k = 0; k < (pins || []).length; k++) { if (d === pins[k] || d.startsWith(pins[k] + ' ')) return k; }
+    return 999;
+  }
+  function sortByDongPin(items, pins) {
+    if (!pins || !pins.length || !items.some(i => dongPinIndex(i.dong, pins) < 999)) return items.slice().sort(cmpDong);
+    return items.slice().sort((a, b) => (dongPinIndex(a.dong, pins) - dongPinIndex(b.dong, pins)) || cmpDong(a, b));
+  }
+  // 위치 폴백: coarse 위치 기준 가까운 단지 n개 [{name, d}] (좌표 없는 단지 제외)
+  function voiceNearbyComplexes(lat, lon, n) {
+    const seen = new Set(), out = [];
+    complexNames().map(name => ({ name, d: complexMinDist(name, lat, lon) }))
+      .filter(c => c.d < 999999)
+      .sort((a, b) => (a.d - b.d) || a.name.localeCompare(b.name, 'ko'))
+      .forEach(c => { if (!seen.has(c.name) && out.length < n) { seen.add(c.name); out.push(c); } });
+    return out;
+  }
+
   // P8: 인식 후보 선택 UI — 칩 선택 시 해당 단지 전체 동 (운행 모드 단지 선택 화면, 동 오름차순)
   function renderVoiceCandidates(container, text, cands) {
     voiceCandList = cands.map(c => c.name);
-    const html = voiceHeardHtml(text) +
-      `<div class="cold-sec">🗣️ 인식 후보 — 단지를 선택하세요</div><div class="chip-row">` +
+    voicePinOff = false;
+    // 음성 동 핀: cands 순위대로 핀 동이 있는 첫 단지에서 핀 인덱스가 가장 작은 동 1개 행
+    let topHtml = '';
+    const pins = voiceDongPin;
+    if (pins && pins.length && cands.length) {
+      for (const c of cands) {
+        let bestItem = null, bestP = 999;
+        complexItems(c.name).forEach(item => { const p = dongPinIndex(item.dong, pins); if (p < bestP) { bestP = p; bestItem = item; } });
+        if (bestItem) { topHtml = cardHtml({ item: bestItem, d: 999999, near: false }, true); break; }
+      }
+    }
+    const html = voiceHeardHtml(text) + topHtml +
+      `<div class="cold-sec">유사단지</div><div class="chip-row">` +
       cands.map((c, i) => { const sa = shortAddr(c.addr); return `<button class="chip" onclick="pickVoiceCand(${i})">${esc(c.name)}${sa ? ` <small>(${esc(sa)})</small>` : ''}</button>`; }).join('') +
       `</div><div class="chip-row voice-all-row"><button class="chip" onclick="showVoiceAllResults()">검색 결과 전체 보기</button></div>`;
     voiceView = { text, html };
@@ -1180,8 +1223,10 @@
     const name = voiceCandList[i];
     if (!name) return;
     voiceView = null; voiceQuery = null;
+    const pins = voicePinOff ? [] : voiceDongPin;
+    voicePinOff = false;
     if (currentMode !== 'main') switchMode('main');   // 단지 전체 동 화면은 운행 모드 래치 뷰
-    showComplexRows(name);
+    showComplexRows(name, pins);
   }
   function showVoiceAllResults() { voiceView = null; voiceQuery = null; refreshDisplay(); }
 
@@ -1214,14 +1259,25 @@
       sugg.map((n, i) => `<button class="chip" onclick="pickVoiceSuggest(${i})">${esc(n)}</button>`).join('') + `</div>`;
     if (alts.length) html += `<div class="cold-sec">다른 인식 결과</div><div class="chip-row">` +
       alts.map((n, i) => `<button class="chip" onclick="pickVoiceSuggest(${sugg.length + i})">혹시 '${esc(n)}'인가요?</button>`).join('') + `</div>`;
+    // 위치 폴백: 신선한 coarse 위치가 있으면 주변 단지 칩 (핀 미적용)
+    const ageMs = coarseT == null ? Infinity : Date.now() - coarseT;
+    if (Number.isFinite(coarseLat) && Number.isFinite(coarseLon) && ageMs <= VOICE_POS_FRESH_MS) {
+      const near = voiceNearbyComplexes(coarseLat, coarseLon, VOICE_CAND_N);
+      if (near.length) {
+        voiceCandList = near.map(c => c.name);
+        voicePinOff = true;
+        html += `<div class="cold-sec">📍 주변 단지</div><div class="chip-row">` +
+          near.map((c, i) => `<button class="chip" onclick="pickVoiceCand(${i})">${esc(c.name)} <small>(약 ${Math.round(c.d)}m)</small></button>`).join('') + `</div>`;
+      }
+    }
     voiceView = { text: vq.text, html };
     container.innerHTML = html;
   }
   function pickVoiceSuggest(i) { const n = voiceSuggestList[i]; if (n) pickVoiceName(n); }
   function pickVoiceName(name) {
-    document.getElementById('search-input').value = name;
     voiceQuery = null; voiceView = null;
-    refreshDisplay();
+    if (currentMode !== 'main') switchMode('main');   // 단지 전체 동 화면은 운행 모드 래치 뷰
+    showComplexRows(name, voiceDongPin);
   }
 
   // PWA 홈 화면 설치
@@ -1309,7 +1365,11 @@
     } else if (rows.length === 0) {
       container.innerHTML = `<div style="color:#555; text-align:center; margin-top:50px;">${searchVal ? '검색 결과가 없습니다.' : '주변 ' + searchRadius + 'm 이내 없음'}</div>`;
     } else {
-      container.innerHTML = rows.map(r => cardHtml(r, true)).join('');
+      const pins = (vq && vq.pinDongs) || [];
+      const pinned = pins.length && rows.some(r => dongPinIndex(r.item.dong, pins) < 999)
+        ? rows.map((r, k) => ({ r, k, p: dongPinIndex(r.item.dong, pins) })).sort((a, b) => (a.p - b.p) || (a.k - b.k)).map(x => x.r)
+        : rows;   // 음성 동 핀: 해당 동 우선, 나머지는 검색 순위 유지 (stable)
+      container.innerHTML = pinned.map(r => cardHtml(r, true)).join('');
     }
   }
 
@@ -1375,9 +1435,9 @@
   function closePickView() { coldDismissed = true; coldView = { type: 'hybrid', wpsPending: false, wpsCands: [] }; releaseLatch(true); }
 
   // 칩/검색/전체 목록에서 단지 선택 시 해당 단지 전체 동 표시
-  function showComplexRows(name) {
+  function showComplexRows(name, pinDongs) {
     coldAnchor = null; coldGoodStreak = 0; coldDismissed = false;
-    const rows = complexItems(name).sort(cmpDong).map(item => ({ item, d: 999999, near: false }));
+    const rows = sortByDongPin(complexItems(name), pinDongs || []).map(item => ({ item, d: 999999, near: false }));
     if (!rows.length) return;
     latch = { items: rows, names: [name], since: Date.now(), kind: 'pick', rank: null };
     latchFilter = null; coldView = null; lastRender = null;

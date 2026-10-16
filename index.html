@@ -73,6 +73,12 @@
     .chip { background:#222; color:#fff; border:1px solid #444; border-radius:20px; padding:8px 14px; font-size:13px; cursor:pointer; }
     .chip small { color:#999; font-size:11px; }
     .cold-x { color:var(--common); font-weight:bold; padding:0 8px; cursor:pointer; }
+    .dest-banner { background:#08131a; border:1.5px solid var(--accent); color:var(--accent); font-size:14px; font-weight:bold; padding:12px; border-radius:10px; margin-bottom:8px; text-align:center; cursor:pointer; }
+    .dest-x { color:var(--accent); font-weight:bold; padding:0 8px; cursor:pointer; }
+    .pair-row { display:flex; justify-content:center; align-items:center; gap:6px; padding:8px 5px; font-size:11px; color:#777; }
+    .pair-row input { width:90px; padding:6px 8px; font-size:12px; margin:0; text-align:center; letter-spacing:2px; }
+    .pair-row button { padding:6px 10px; font-size:11px; border-radius:6px; border:1px solid #444; background:#222; color:var(--accent); font-weight:bold; cursor:pointer; }
+    .pair-row .pair-toggle { background:none; border:none; color:#555; font-size:11px; cursor:pointer; }
     #cold-search { display:block; width:100%; }
     .voice-heard { color:#fff; font-size:20px; text-align:center; margin:14px 0 8px; word-break:keep-all; }
     .voice-heard b { color:var(--accent); }
@@ -99,6 +105,8 @@
   </div>
 
   <div id="content-area">
+    <div id="dest-banner" style="display:none"></div>
+    <div class="pair-row" id="pair-row"></div>
     <div id="gps-status" class="gps-status"></div>
     <div id="search-wrap" class="search-wrap">
       <div class="search-bar">
@@ -178,7 +186,7 @@
   const SCORE_CUTOFF = 70, P5_BONUS = 10, CHALLENGER_MIN = 85; // 실측 튜닝 전 잠정치 — 100점 만점, P5 가점은 합계 100 cap
   const GOOD_FIX_ACC = 25, GOOD_FIX_MIN = 3;   // 실측 튜닝 전 잠정치 — 폴백 #4
   // ===== 콜드스타트 (실측 튜닝 전 잠정치) =====
-  const WPS_TIMEOUT_MS = 4000;              // 실측 튜닝 전 잠정치 — 콜드스타트 WPS 1회 요청 타임아웃 (WiFi 우선)
+  const WPS_TIMEOUT_MS = 6000;              // 실측 튜닝 전 잠정치 — 콜드스타트 1회 요청 타임아웃 (GPS 우선, 2026-10-16 WiFi 우선 실패로 복원)
   const WIFI_AUTO_MAX_ACC_M = 150;          // 실측 튜닝 전 잠정치 — 자동 선택 허용 최대 accuracy
   const WPS_MAX_ACC_M = 800;                // 실측 튜닝 전 잠정치 — 후보 순위화 허용 최대 accuracy
   const WPS_CANDIDATE_N = 3;                // 실측 튜닝 전 잠정치 — 수동 선택 후보 수
@@ -231,6 +239,7 @@
     const savedRad = localStorage.getItem('aptSearchRadius');
     if(savedRad) setRadius(parseInt(savedRad)); else setRadius(40);
     loadData();
+    renderPairRow();
 
     gpsTimeout = setTimeout(() => {
       isGpsReady = true;
@@ -789,6 +798,7 @@
     dataVer++; prefetch.clear(); lastRender = null;
     prewarmJamo();   // P3: 오타 보정용 자모 분해 사전 캐싱
     if (coldView && coldView.needData) coldChecked = false;  // 데이터 로드 후 콜드 판정 재시도
+    maybeFetchDestination();
     refreshDisplay();
   }
   
@@ -1383,7 +1393,7 @@
     if (navigator.geolocation) {
       try {
         navigator.geolocation.getCurrentPosition(onColdWpsOk, onColdWpsErr,
-          { enableHighAccuracy: false, timeout: WPS_TIMEOUT_MS, maximumAge: 10000 });
+          { enableHighAccuracy: true, timeout: WPS_TIMEOUT_MS, maximumAge: 3000 });
         return;
       } catch (e) {}
     }
@@ -1460,6 +1470,112 @@
     latchFilter = null; coldView = null; lastRender = null;
     refreshDisplay();
   }
+  // ===== 배달 목적지 자동 표시 (페어링 사용자 전용) =====
+  const DEST_FRESH_MS = 90 * 60 * 1000;
+  let destFetchDone = false, destDismissed = false, destInfo = null, pairExpanded = false;
+  function getPairCode() {
+    const c = String(localStorage.getItem('rider_pair_code') || '').trim().toUpperCase();
+    return /^[A-Z0-9]{6}$/.test(c) ? c : null;
+  }
+  function renderPairRow() {
+    const el = document.getElementById('pair-row'); if (!el) return;
+    const code = getPairCode();
+    if (code) el.innerHTML = '<span>📦 배달 연동됨</span><button onclick="clearPairCode()">해제</button>';
+    else if (pairExpanded) el.innerHTML = '<span>📦 배달 연동</span><input id="pair-code-input" maxlength="6" placeholder="6자리 코드" autocomplete="off"><button onclick="savePairCode()">저장</button><button onclick="togglePairRow()">닫기</button>';
+    else el.innerHTML = '<button class="pair-toggle" onclick="togglePairRow()">📦 배달 연동</button>';
+  }
+  function togglePairRow() { pairExpanded = !pairExpanded; renderPairRow(); }
+  function savePairCode() {
+    const inp = document.getElementById('pair-code-input');
+    const c = String((inp && inp.value) || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(c)) { showMsg('6자리 코드를 입력해 주세요.'); return; }
+    try { localStorage.setItem('rider_pair_code', c); } catch (e) {}
+    pairExpanded = false; destFetchDone = false; destDismissed = false; destInfo = null;
+    renderPairRow(); maybeFetchDestination();
+  }
+  function clearPairCode() {
+    try { localStorage.removeItem('rider_pair_code'); } catch (e) {}
+    destInfo = null; destDismissed = false; destFetchDone = false;
+    renderDestBanner(); renderPairRow();
+  }
+  async function maybeFetchDestination() {
+    if (destFetchDone) return;
+    const code = getPairCode(); if (!code) return;
+    destFetchDone = true;
+    try {
+      const res = await fetch(SUPABASE_URL + '/functions/v1/rider-dest?code=' + encodeURIComponent(code), { headers: { 'apikey': SUPABASE_ANON_KEY } });
+      if (!res.ok) return;
+      const j = await res.json();
+      const addr = String((j && j.address) || '').trim();
+      const t = Date.parse(j && j.created_at);
+      if (!addr || !Number.isFinite(t) || (Date.now() - t) > DEST_FRESH_MS) return;
+      const m = matchAddressToComplex(addr);
+      const dong = extractDong(addr);
+      destInfo = m ? { type:'match', name:m.name, dong: dong, address: addr }
+                   : { type:'nomatch', address: addr, keyword: extractPlaceKeyword(addr) };
+      destDismissed = false;
+      renderDestBanner();
+    } catch (e) {}
+  }
+  function matchAddressToComplex(addr) {
+    const norm = s => String(s||'').replace(/\s+/g,'').replace(/경상북도/g,'경북');
+    const na = norm(addr);
+    if (!na) return null;
+    const roadM = na.match(/([가-힣]{2,}(?:로|길))(\d+(?:번길\d+)?(?:-\d+)?)?/);
+    const roadName = roadM ? roadM[1] : '', roadNum = roadM ? (roadM[2]||'') : '';
+    const scored = new Map();
+    const nameHit = (name, sc) => { if (name) scored.set(name, Math.max(scored.get(name)||0, sc)); };
+    (allData||[]).forEach(it => {
+      const nm = String(it.name||''); if (!nm) return;
+      const nn = norm(nm);
+      if (nn.length >= 2 && na.includes(nn)) nameHit(nm, 50 + nn.length);
+      const da = norm(it.addr);
+      if (da && roadName && da.includes(roadName)) {
+        if (roadNum && da.includes(roadName + roadNum)) nameHit(nm, 100);
+        else nameHit(nm, 40);
+      }
+    });
+    if (!scored.size) return null;
+    const sorted = [...scored.entries()].sort((a,b) => b[1]-a[1]);
+    if (sorted[0][1] < 50) return null;
+    if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) return null;
+    return { name: sorted[0][0] };
+  }
+  function extractDong(addr) {
+    const m = String(addr||'').match(/(\d{1,4})\s*동/);
+    return m ? m[1] + '동' : null;
+  }
+  function extractPlaceKeyword(addr) {
+    let s = String(addr||'').replace(/\([^)]*\)/g, ' ');
+    const m = s.match(/(?:로|길)\s*\d+(?:번길\s*\d+)?(?:-\d+)?\s*(.*)$/);
+    let tail = (m ? m[1] : s).trim();
+    tail = tail.replace(/\d+\s*층.*$/, '').replace(/[A-Z0-9]{6,}.*$/, '').trim();
+    const words = tail.split(/\s+/).filter(w => w && !/^(경북|포항시|남구|북구|흥해읍|연일읍|오천읍|기계면)$/.test(w));
+    return (words.slice(0,3).join(' ') || s).slice(0,20);
+  }
+  function renderDestBanner() {
+    const el = document.getElementById('dest-banner'); if (!el) return;
+    if (!getPairCode() || destDismissed || !destInfo) { el.style.display='none'; el.innerHTML=''; return; }
+    let html;
+    if (destInfo.type === 'match') {
+      const dongTxt = destInfo.dong ? ' ' + esc(destInfo.dong) : '';
+      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt + ' <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
+    } else {
+      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달: ' + esc(destInfo.address.slice(0,20)) + '… <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
+    }
+    el.innerHTML = html; el.style.display = 'block';
+  }
+  function onDestBannerTap() {
+    if (!destInfo) return;
+    if (destInfo.type === 'match') {
+      showComplexRows(destInfo.name, destInfo.dong ? [destInfo.dong] : undefined);
+    } else {
+      const inp = document.getElementById('search-input');
+      if (inp) inp.value = destInfo.keyword || '';
+      switchMode('manage'); refreshDisplay();
+    }
+  }
+  function dismissDestBanner(e) { if (e && e.stopPropagation) e.stopPropagation(); destDismissed = true; renderDestBanner(); }
   function pickRecent(i) { const r = coldRecentList[i]; if (r) showComplexRows(r.name); }
   function pickWps(i) { const c = coldWpsList[i]; if (c) showComplexRows(c.name); }
   function pickSearch(i) { const n = coldSearchList[i]; if (n) showComplexRows(n); }
@@ -1509,7 +1625,7 @@
     const dual = !!(rank && rank.mode === 'dual' && rank.ordered && rank.ordered.length >= 2);
     let badge;
     if (latch.kind === 'wps') {
-      badge = `<div class="latch-badge">📶 WiFi 위치 기준 (정확도 약 ${latch.wpsAcc}m) <span class="cold-x" onclick="closeColdRestore(event)">✕</span></div>`;
+      badge = `<div class="latch-badge">📡 위치 기준 (정확도 약 ${latch.wpsAcc}m) <span class="cold-x" onclick="closeColdRestore(event)">✕</span></div>`;
     } else if (latch.kind === 'pick') {
       badge = `<div class="latch-badge" onclick="closePickView()">📍 ${esc(latch.names[0] || '')} 전체 동 (터치 시 해제)</div>`;
     } else if (dual) {

@@ -60,6 +60,7 @@
     .fchip-row { display:flex; gap:6px; margin-bottom:8px; }
     .fchip { flex:1; background:#222; color:#999; border:1px solid #444; border-radius:8px; padding:10px 0; font-size:13px; font-weight:bold; cursor:pointer; }
     .fchip.active { background:var(--accent); color:#000; border-color:var(--accent); }
+    .wps-expand { display:block; width:100%; margin:10px 0 4px; background:#222; color:var(--accent); border:1px solid #444; border-radius:8px; padding:12px 0; font-size:13px; font-weight:bold; cursor:pointer; }
     .rank-sec { color:var(--common); font-size:13px; font-weight:bold; margin:10px 0 6px 2px; }
     #snack-bar { display:none; position:fixed; bottom:110px; left:10px; right:10px; background:#1c1c1e; border:1.5px solid var(--accent); border-radius:12px; padding:12px; z-index:100001; text-align:center; font-size:14px; }
     #snack-bar button { margin:4px 4px 0 4px; padding:8px 16px; border-radius:8px; border:none; font-weight:bold; font-size:14px; cursor:pointer; }
@@ -1417,19 +1418,34 @@
     coldView.type = 'hybrid';
     refreshDisplay();
   }
-  // WPS 1위 단지 자동 선택: 해당 단지 전체 동 표시 (거리는 WPS 위치 기준). 성공 시 true
+  // WPS 1위 단지 자동 선택: 측위 성공 시 가까운 동만 거리순 표시 (거리는 WPS 위치 기준). 성공 시 true
   function doWpsAutoSelect(name, lat, lon, acc) {
     if (coldDismissed || currentMode !== 'main' || !name) return false;
-    const rows = complexItems(name).sort(cmpDong).map(item => {
+    const all = complexItems(name).map(item => {
       const d = getDist(item.lat, item.lon, lat, lon);
       return { item, d, near: d <= searchRadius };
     });
-    if (!rows.length) return false;
-    latch = { items: rows, names: [name], since: Date.now(), kind: 'wps', wpsAcc: Math.round(acc), rank: null };
+    if (!all.length) return false;
+    // 신호 끊김 지역이 아니면 가까운 동만 표시 (예전처럼 거리순). 나머지는 접어둠
+    const R = Math.max(searchRadius, acc);
+    let rows = all.filter(r => r.d <= R).sort((a, b) => a.d - b.d);
+    let collapsed = false, allItems = null;
+    if (rows.length < all.length) {
+      if (!rows.length) rows = all.slice().sort((a, b) => a.d - b.d).slice(0, 5); // 안전장치: 가장 가까운 5개
+      collapsed = true;
+      allItems = all.slice().sort((a, b) => a.d - b.d);
+    }
+    latch = { items: rows, names: [name], since: Date.now(), kind: 'wps', wpsAcc: Math.round(acc), rank: null, collapsed, allItems };
     latchFilter = null; coldView = null; coldAnchor = null; coldGoodStreak = 0;
     lastRender = null;
     refreshDisplay();
     return true;
+  }
+  function toggleWpsExpand() {
+    if (!latch || latch.kind !== 'wps' || !latch.collapsed || !latch.allItems) return;
+    latch.items = latch.allItems; latch.collapsed = false;
+    lastRender = null;
+    refreshDisplay();
   }
   function closeColdRestore(e) { if (e && e.stopPropagation) e.stopPropagation(); coldDismissed = true; coldView = { type: 'hybrid', wpsPending: false, wpsCands: [] }; releaseLatch(true); }
   function closePickView() { coldDismissed = true; coldView = { type: 'hybrid', wpsPending: false, wpsCands: [] }; releaseLatch(true); }
@@ -1522,6 +1538,10 @@
       }
       html += cardHtml(r, false);
     });
+    if (latch.kind === 'wps' && latch.collapsed && latch.allItems) {
+      const more = latch.allItems.length - latch.items.length;
+      if (more > 0) html += `<button class="wps-expand" onclick="toggleWpsExpand()">이 단지의 다른 동 ${more}개 더 보기</button>`;
+    }
     container.innerHTML = html;
     lastRender = { latch, latchFilter };
   }

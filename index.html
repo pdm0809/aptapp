@@ -1461,7 +1461,14 @@
   }
   function toggleWpsExpand() {
     if (!latch || latch.kind !== 'wps' || !latch.collapsed || !latch.allItems) return;
+    latch.collapsedItems = latch.items;  // 펼치기 전 목록 저장 (접기 버튼 위치용)
     latch.items = latch.allItems; latch.collapsed = false;
+    lastRender = null;
+    refreshDisplay();
+  }
+  function collapseWps() {
+    if (!latch || latch.kind !== 'wps' || latch.collapsed || !latch.collapsedItems) return;
+    latch.items = latch.collapsedItems; latch.collapsed = true;
     lastRender = null;
     refreshDisplay();
   }
@@ -1705,7 +1712,18 @@
     let items = latch.items;
     if (latchFilter != null) items = items.filter(r => String(r.item.name) === latchFilter);
     let html = badge + chips, curSec = null;
-    items.forEach(r => {
+    // WPS 펼침: 펼치기 전 목록 + 접기 버튼(펼치기 있던 자리) + 나머지
+    const wpsExpanded = latch.kind === 'wps' && !latch.collapsed && latch.collapsedItems && latch.allItems && latchFilter == null;
+    let renderItems = items, splitIdx = -1;
+    if (wpsExpanded) {
+      const collapsedSet = new Set(latch.collapsedItems);
+      const first = latch.allItems.filter(r => collapsedSet.has(r));
+      const rest = latch.allItems.filter(r => !collapsedSet.has(r));
+      renderItems = first.concat(rest);
+      splitIdx = first.length;
+    }
+    renderItems.forEach((r, idx) => {
+      if (wpsExpanded && idx === splitIdx) html += `<button class="wps-expand" onclick="collapseWps()">접기</button>`;
       const n = String(r.item.name);
       if (dual && latchFilter == null && n !== curSec) {
         curSec = n;

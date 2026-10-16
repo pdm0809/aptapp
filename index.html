@@ -177,7 +177,7 @@
   const SCORE_CUTOFF = 70, P5_BONUS = 10, CHALLENGER_MIN = 85; // 실측 튜닝 전 잠정치 — 100점 만점, P5 가점은 합계 100 cap
   const GOOD_FIX_ACC = 25, GOOD_FIX_MIN = 3;   // 실측 튜닝 전 잠정치 — 폴백 #4
   // ===== 콜드스타트 (실측 튜닝 전 잠정치) =====
-  const WPS_TIMEOUT_MS = 8000;              // 실측 튜닝 전 잠정치 — 콜드스타트 WPS 1회 요청 타임아웃
+  const WPS_TIMEOUT_MS = 4000;              // 실측 튜닝 전 잠정치 — 콜드스타트 WPS 1회 요청 타임아웃 (WiFi 우선)
   const WIFI_AUTO_MAX_ACC_M = 150;          // 실측 튜닝 전 잠정치 — 자동 선택 허용 최대 accuracy
   const WPS_MAX_ACC_M = 800;                // 실측 튜닝 전 잠정치 — 후보 순위화 허용 최대 accuracy
   const WPS_CANDIDATE_N = 3;                // 실측 튜닝 전 잠정치 — 수동 선택 후보 수
@@ -1382,7 +1382,7 @@
     if (navigator.geolocation) {
       try {
         navigator.geolocation.getCurrentPosition(onColdWpsOk, onColdWpsErr,
-          { enableHighAccuracy: true, timeout: WPS_TIMEOUT_MS, maximumAge: 0 });
+          { enableHighAccuracy: false, timeout: WPS_TIMEOUT_MS, maximumAge: 10000 });
         return;
       } catch (e) {}
     }

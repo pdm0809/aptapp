@@ -75,6 +75,8 @@
     .cold-x { color:var(--common); font-weight:bold; padding:0 8px; cursor:pointer; }
     .dest-banner { background:#08131a; border:1.5px solid var(--accent); color:var(--accent); font-size:14px; font-weight:bold; padding:12px; border-radius:10px; margin-bottom:8px; text-align:center; cursor:pointer; }
     .dest-x { color:var(--accent); font-weight:bold; padding:0 8px; cursor:pointer; }
+    .dest-priority-head { background:#08131a; border:1.5px solid var(--accent); color:var(--accent); font-size:15px; font-weight:bold; padding:12px; border-radius:10px; margin-bottom:8px; text-align:center; }
+    .dest-expand-btn { display:block; width:100%; margin-top:10px; padding:12px; font-size:14px; font-weight:bold; border-radius:10px; border:1px solid #444; background:#222; color:var(--accent); cursor:pointer; }
     .pair-row { display:flex; justify-content:center; align-items:center; gap:6px; padding:8px 5px; font-size:11px; color:#777; }
     .pair-row input { width:90px; padding:6px 8px; font-size:12px; margin:0; text-align:center; letter-spacing:2px; }
     .pair-row button { padding:6px 10px; font-size:11px; border-radius:6px; border:1px solid #444; background:#222; color:var(--accent); font-weight:bold; cursor:pointer; }
@@ -1472,7 +1474,7 @@
   }
   // ===== 배달 목적지 자동 표시 (페어링 사용자 전용) =====
   const DEST_FRESH_MS = 90 * 60 * 1000;
-  let destFetchDone = false, destDismissed = false, destInfo = null, pairExpanded = false;
+  let destFetchDone = false, destDismissed = false, destInfo = null, pairExpanded = false, destExpanded = false;
   function getPairCode() {
     const c = String(localStorage.getItem('rider_pair_code') || '').trim().toUpperCase();
     return /^[A-Z0-9]{6}$/.test(c) ? c : null;
@@ -1490,12 +1492,12 @@
     const c = String((inp && inp.value) || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{6}$/.test(c)) { showMsg('6자리 코드를 입력해 주세요.'); return; }
     try { localStorage.setItem('rider_pair_code', c); } catch (e) {}
-    pairExpanded = false; destFetchDone = false; destDismissed = false; destInfo = null;
+    pairExpanded = false; destFetchDone = false; destDismissed = false; destInfo = null; destExpanded = false;
     renderPairRow(); maybeFetchDestination();
   }
   function clearPairCode() {
     try { localStorage.removeItem('rider_pair_code'); } catch (e) {}
-    destInfo = null; destDismissed = false; destFetchDone = false;
+    destInfo = null; destDismissed = false; destFetchDone = false; destExpanded = false;
     renderDestBanner(); renderPairRow();
   }
   async function maybeFetchDestination() {
@@ -1513,8 +1515,8 @@
       const dong = extractDong(addr);
       destInfo = m ? { type:'match', name:m.name, dong: dong, address: addr }
                    : { type:'nomatch', address: addr, keyword: extractPlaceKeyword(addr) };
-      destDismissed = false;
-      renderDestBanner();
+      destDismissed = false; destExpanded = false;
+      renderDestBanner(); refreshDisplay();
     } catch (e) {}
   }
   function matchAddressToComplex(addr) {
@@ -1553,18 +1555,6 @@
     const words = tail.split(/\s+/).filter(w => w && !/^(경북|포항시|남구|북구|흥해읍|연일읍|오천읍|기계면)$/.test(w));
     return (words.slice(0,3).join(' ') || s).slice(0,20);
   }
-  function renderDestBanner() {
-    const el = document.getElementById('dest-banner'); if (!el) return;
-    if (!getPairCode() || destDismissed || !destInfo) { el.style.display='none'; el.innerHTML=''; return; }
-    let html;
-    if (destInfo.type === 'match') {
-      const dongTxt = destInfo.dong ? ' ' + esc(destInfo.dong) : '';
-      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt + ' <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
-    } else {
-      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달: ' + esc(destInfo.address.slice(0,20)) + '… <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
-    }
-    el.innerHTML = html; el.style.display = 'block';
-  }
   function onDestBannerTap() {
     if (!destInfo) return;
     if (destInfo.type === 'match') {
@@ -1576,6 +1566,50 @@
     }
   }
   function dismissDestBanner(e) { if (e && e.stopPropagation) e.stopPropagation(); destDismissed = true; renderDestBanner(); }
+  // ===== 배달 목적지 우선 표시 (페어링 + 매칭된 목적지가 있으면 GPS 상태 무관하게 최우선) =====
+  function isDestPriorityActive() {
+    return !!(getPairCode() && !destDismissed && destInfo && destInfo.type === 'match');
+  }
+  function renderDestBanner() {
+    const el = document.getElementById('dest-banner'); if (!el) return;
+    // 운행 모드에서 우선 뷰가 뜨면 배너는 중복이므로 숨김
+    if (!getPairCode() || destDismissed || !destInfo || (isDestPriorityActive() && currentMode === 'main')) { el.style.display='none'; el.innerHTML=''; return; }
+    let html;
+    if (destInfo.type === 'match') {
+      const dongTxt = destInfo.dong ? ' ' + esc(destInfo.dong) : '';
+      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt + ' <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
+    } else {
+      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달: ' + esc(destInfo.address.slice(0,20)) + '… <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
+    }
+    el.innerHTML = html; el.style.display = 'block';
+  }
+  function renderDestPriority(container) {
+    const items = complexItems(destInfo.name);
+    if (!items.length) return false;  // 방어: 단지 데이터 없으면 일반 렌더로 폴백
+    const dong = destInfo.dong ? String(destInfo.dong).replace(/\s+/g, '') : '';
+    let rows, showExpand = false;
+    if (dong && !destExpanded) {
+      const pinned = items.filter(i => {
+        const d = String(i.dong || '').replace(/\s+/g, '');
+        return d && (d.indexOf(dong) === 0 || dong.indexOf(d) === 0);
+      });
+      const list = pinned.length ? pinned : items;
+      rows = list.map(item => ({ item, d: 0, near: true }));
+      showExpand = pinned.length > 0 && items.length > pinned.length;
+    } else {
+      rows = items.slice().sort((a, b) => cmpDong(a, b)).map(item => ({ item, d: 0, near: true }));
+    }
+    const dongTxt = destInfo.dong ? ' ' + esc(destInfo.dong) : '';
+    container.innerHTML =
+      '<div class="dest-priority-head">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt +
+      ' <span class="dest-x" onclick="dismissDestPriority(event)">✕</span></div>' +
+      rows.map(r => cardHtml(r, false)).join('') +
+      (showExpand ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
+    lastRender = null;
+    return true;
+  }
+  function dismissDestPriority(e) { if (e && e.stopPropagation) e.stopPropagation(); destDismissed = true; renderDestBanner(); refreshDisplay(); }
+  function expandDestPriority() { destExpanded = true; refreshDisplay(); }
   function pickRecent(i) { const r = coldRecentList[i]; if (r) showComplexRows(r.name); }
   function pickWps(i) { const c = coldWpsList[i]; if (c) showComplexRows(c.name); }
   function pickSearch(i) { const n = coldSearchList[i]; if (n) showComplexRows(n); }
@@ -1670,6 +1704,10 @@
 
   // 운행 모드 렌더링: 거리 1회 계산 → 이탈 지연 필터 → 정렬 → (변화 없으면) 렌더 생략
   function renderMain(container) {
+    // 배달 목적지 우선: 페어링 + 매칭된 목적지가 있으면 GPS 상태와 무관하게 최우선 표시
+    if (isDestPriorityActive()) {
+      if (renderDestPriority(container)) return;
+    }
     const hasFix = Number.isFinite(myLat) && Number.isFinite(myLon);
     if (!isGpsReady && !hasFix) {
       container.innerHTML = `<div id="loading-msg" style="color:#555; text-align:center; margin-top:80px;">📍 현재 위치를 확인 중입니다...</div>`;

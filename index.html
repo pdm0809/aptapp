@@ -1367,8 +1367,8 @@
     } else {
       const pins = (vq && vq.pinDongs) || [];
       const pinned = pins.length && rows.some(r => dongPinIndex(r.item.dong, pins) < 999)
-        ? rows.map((r, k) => ({ r, k, p: dongPinIndex(r.item.dong, pins) })).sort((a, b) => (a.p - b.p) || (a.k - b.k)).map(x => x.r)
-        : rows;   // 음성 동 핀: 해당 동 우선, 나머지는 검색 순위 유지 (stable)
+        ? rows.map((r, k) => ({ r, k, p: dongPinIndex(r.item.dong, pins) })).sort((a, b) => (a.p - b.p) || cmpDong(a.r.item, b.r.item)).map(x => x.r)
+        : rows;   // 음성 동 핀: 해당 동 우선, 나머지는 cmpDong 오름차순
       container.innerHTML = pinned.map(r => cardHtml(r, true)).join('');
     }
   }

@@ -1214,7 +1214,7 @@
     const html = voiceHeardHtml(text) + topHtml +
       `<div class="cold-sec">유사단지</div><div class="chip-row">` +
       cands.map((c, i) => { const sa = shortAddr(c.addr); return `<button class="chip" onclick="pickVoiceCand(${i})">${esc(c.name)}${sa ? ` <small>(${esc(sa)})</small>` : ''}</button>`; }).join('') +
-      `</div><div class="chip-row voice-all-row"><button class="chip" onclick="showVoiceAllResults()">검색 결과 전체 보기</button></div>`;
+      `</div><div class="chip-row voice-all-row"><button class="chip" onclick="showVoiceAllResults()">텍스트로 다시 검색</button></div>`;
     voiceView = { text, html };
     lastRender = null;
     container.innerHTML = html;

@@ -1433,7 +1433,8 @@
     if (rows.length < all.length) {
       if (!rows.length) rows = all.slice().sort((a, b) => a.d - b.d).slice(0, 5); // 안전장치: 가장 가까운 5개
       collapsed = true;
-      allItems = all.slice().sort((a, b) => a.d - b.d);
+      // GPS가 튈 수 있으니 펼친 전체 목록은 거리순이 아닌 동 오름차순 (수동 찾기용)
+      allItems = all.slice().sort((a, b) => cmpDong(a.item, b.item));
     }
     latch = { items: rows, names: [name], since: Date.now(), kind: 'wps', wpsAcc: Math.round(acc), rank: null, collapsed, allItems };
     latchFilter = null; coldView = null; coldAnchor = null; coldGoodStreak = 0;
@@ -1540,7 +1541,7 @@
     });
     if (latch.kind === 'wps' && latch.collapsed && latch.allItems) {
       const more = latch.allItems.length - latch.items.length;
-      if (more > 0) html += `<button class="wps-expand" onclick="toggleWpsExpand()">이 단지의 다른 동 ${more}개 더 보기</button>`;
+      if (more > 0) html += `<button class="wps-expand" onclick="toggleWpsExpand()">단지 전체 펼치기</button>`;
     }
     container.innerHTML = html;
     lastRender = { latch, latchFilter };

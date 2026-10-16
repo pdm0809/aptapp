@@ -1519,12 +1519,19 @@
       renderDestBanner(); refreshDisplay();
     } catch (e) {}
   }
+  // 도로명 주소 파싱: 원본(공백 유지) 텍스트에서 파싱해야 번지·동 숫자가 합쳐지지 않음
+  // "남옥로 20", "소티재로151번길 21", "도음로827번길 9" → {road, num}
+  function parseRoadAddr(addr) {
+    const m = String(addr || '').match(/([가-힣]{2,}(?:로|길)(?:\s*\d+\s*번길)?)\s*(\d+(?:-\d+)?)/);
+    if (!m) return null;
+    return { road: m[1].replace(/\s+/g, ''), num: m[2] };
+  }
   function matchAddressToComplex(addr) {
     const norm = s => String(s||'').replace(/\s+/g,'').replace(/경상북도/g,'경북');
     const na = norm(addr);
     if (!na) return null;
-    const roadM = na.match(/([가-힣]{2,}(?:로|길))(\d+(?:번길\d+)?(?:-\d+)?)?/);
-    const roadName = roadM ? roadM[1] : '', roadNum = roadM ? (roadM[2]||'') : '';
+    const pr = parseRoadAddr(addr);
+    const roadName = pr ? pr.road : '', roadNum = pr ? pr.num : '';
     const scored = new Map();
     const nameHit = (name, sc) => { if (name) scored.set(name, Math.max(scored.get(name)||0, sc)); };
     (allData||[]).forEach(it => {

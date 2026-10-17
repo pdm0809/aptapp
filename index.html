@@ -1692,14 +1692,22 @@
     } catch (e) {}
   }
   // 저장된 배달 주소를 현재 allData로 다시 매칭 (데이터 갱신 시 nomatch 구제용)
-  function rematchDestination() {
+  async function rematchDestination() {
     if (!destRawAddr) return;
     const m = matchAddressToComplex(destRawAddr);
     const dong = extractDong(destRawAddr);
     const hosu = extractHosu(destRawAddr);
     const wasMatch = destInfo && destInfo.type === 'match';
-    destInfo = m ? { type:'match', name:m.name, dong: dong, hosu: hosu, address: destRawAddr }
-                 : { type:'nomatch', address: destRawAddr, keyword: extractPlaceKeyword(destRawAddr) };
+    if (m) {
+      // 매칭 성공 → 자동 학습 (DB에 주소 없으면 저장)
+      autoLearnAddress(m.name, destRawAddr);
+      destInfo = { type:'match', name:m.name, dong: dong, hosu: hosu, address: destRawAddr };
+    } else {
+      // 이름/주소 매칭 실패 → 좌표 기반 매칭 시도
+      const cm = await matchByCoords(destRawAddr);
+      destInfo = cm ? { type:'match', name:cm.name, dong: dong, hosu: hosu, address: destRawAddr, viaCoords: true }
+                    : { type:'nomatch', address: destRawAddr, keyword: extractPlaceKeyword(destRawAddr) };
+    }
     // nomatch→match로 바뀌었거나 처음 매칭이면 배너 갱신
     if (!wasMatch) { destDismissed = false; destExpanded = false; }
     renderDestBanner(); refreshDisplay();
@@ -1711,6 +1719,72 @@
     if (!m) return null;
     return { road: m[1].replace(/\s+/g, ''), num: m[2] };
   }
+  // ===== 배달 주소 자동 학습 (1번): 이름 매칭 성공 시 주소를 DB에 자동 저장 =====
+  async function autoLearnAddress(matchedName, deliveryAddr) {
+    if (!matchedName || !deliveryAddr) return;
+    const item = (allData||[]).find(it => String(it.name||'').trim() === String(matchedName).trim());
+    if (!item) return;
+    const pr = parseRoadAddr(deliveryAddr);
+    if (!pr || !pr.road || !pr.num) return;
+    const newAddrPart = deliveryAddr.trim();
+    const existing = String(item.addr || '');
+    // 이미 주소가 있으면 스킵
+    if (existing && existing.includes(pr.road.replace(/\s+/g,''))) return;
+    const updated = existing ? existing + ' / ' + newAddrPart : newAddrPart;
+    try {
+      const SUPABASE_URL = 'https://saokvvmfdgybocpfamhl.supabase.co';
+      const ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhb2t2dm1mZGd5Ym9jcGZhbWhsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0NDQ2NjAsImV4cCI6MjEwNzAyMDY2MH0.VDBrvAVaPBA89Iq56EGnaPV92iA96_UaJLphB5jLcCk';
+      await fetch(`${SUPABASE_URL}/rest/v1/apt_passwords?apt_name=eq.${encodeURIComponent(matchedName)}`, {
+        method: 'PATCH',
+        headers: {
+          'apikey': ANON_KEY,
+          'Authorization': 'Bearer ' + ANON_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify({ address: updated })
+      });
+      item.addr = updated;
+    } catch (e) { /* 자동 학습 실패는 무시 */ }
+  }
+
+  // ===== 좌표 기반 매칭 (2번): 주소만 있고 이름 매칭 안 될 때 가장 가까운 단지 찾기 =====
+  async function geocodeAddress(addr) {
+    try {
+      const q = encodeURIComponent('경북 포항시 ' + String(addr||'').replace(/^경북\s*포항시\s*/, ''));
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1&countrycodes=kr`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      const data = await r.json();
+      if (data && data.length > 0) {
+        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      }
+    } catch (e) { /* 지오코딩 실패는 무시 */ }
+    return null;
+  }
+
+  function findNearestByCoords(lat, lng, maxDistM = 100) {
+    let best = null, bestDist = maxDistM;
+    (allData||[]).forEach(it => {
+      const ilat = parseFloat(it.lat), ilng = parseFloat(it.lng);
+      if (!ilat || !ilng) return;
+      // Haversine 거리 (m)
+      const R = 6371000;
+      const dLat = (ilat - lat) * Math.PI / 180;
+      const dLng = (ilng - lng) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(lat*Math.PI/180) * Math.cos(ilat*Math.PI/180) * Math.sin(dLng/2)**2;
+      const d = 2 * R * Math.asin(Math.sqrt(a));
+      if (d < bestDist) { bestDist = d; best = it; }
+    });
+    return best ? { name: best.name, dist: Math.round(bestDist) } : null;
+  }
+
+  async function matchByCoords(addr) {
+    const coords = await geocodeAddress(addr);
+    if (!coords) return null;
+    return findNearestByCoords(coords.lat, coords.lng, 100);
+  }
+
   function matchAddressToComplex(addr) {
     const norm = s => String(s||'').replace(/\s+/g,'').replace(/경상북도/g,'경북');
     const na = norm(addr);

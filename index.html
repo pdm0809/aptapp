@@ -1780,29 +1780,67 @@
         const d = String(i.dong || '').replace(/\s+/g, '');
         return d && (d.indexOf(dong) === 0 || dong.indexOf(d) === 0);
       });
-      // 호수가 있으면 해당 호수 항목을 맨 위로
+      // 호수가 있으면 해당 호수 라인만 표시 (204호 → 라인 4 → "202동 3.4")
       if (destInfo.hosu) {
         const hs = destInfo.hosu;
-        pinned.sort((a, b) => {
-          const am = String(a.pw || '').includes(hs) ? 0 : 1;
-          const bm = String(b.pw || '').includes(hs) ? 0 : 1;
-          return am - bm || cmpDong(a, b);
+        const line = String(parseInt(hs.slice(-2), 10));  // "204" → "4", "2405" → "5"
+        const linePinned = pinned.filter(i => {
+          const dl = String(i.dong || '');
+          // "202동 3.4"에서 라인 부분 추출
+          const m = dl.match(/\d+동\s*([\d.]+)/);
+          if (!m) return false;
+          const lines = m[1].split('.');
+          return lines.includes(line);
         });
-      }
-      const rest = items.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
-      const pinnedHtml = pinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
-      const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
-      if (!destExpanded) {
-        // 접힘: 해당 동만 + 펼치기 버튼
-        const list = pinned.length ? pinned : items;
-        bodyHtml = list.map(item => cardHtml({ item, d: 0, near: true }, false)).join('') +
-          ((pinned.length > 0 && items.length > pinned.length)
-            ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
+        if (linePinned.length) {
+          // 라인 매칭된 것만 표시
+          const rest = items.filter(i => linePinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
+          const pinnedHtml = linePinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
+          const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
+          if (!destExpanded) {
+            bodyHtml = pinnedHtml +
+              ((linePinned.length > 0 && items.length > linePinned.length)
+                ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
+          } else {
+            bodyHtml = pinnedHtml +
+              '<button class="dest-expand-btn" onclick="collapseDestPriority()">접기</button>' +
+              restHtml;
+          }
+        } else {
+          // 라인 매칭 실패 시 기존 동작 (호수 포함 여부로 정렬)
+          pinned.sort((a, b) => {
+            const am = String(a.pw || '').includes(hs) ? 0 : 1;
+            const bm = String(b.pw || '').includes(hs) ? 0 : 1;
+            return am - bm || cmpDong(a, b);
+          });
+          const rest = items.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
+          const pinnedHtml = pinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
+          const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
+          if (!destExpanded) {
+            const list = pinned.length ? pinned : items;
+            bodyHtml = list.map(item => cardHtml({ item, d: 0, near: true }, false)).join('') +
+              ((pinned.length > 0 && items.length > pinned.length)
+                ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
+          } else {
+            bodyHtml = pinnedHtml +
+              '<button class="dest-expand-btn" onclick="collapseDestPriority()">접기</button>' +
+              restHtml;
+          }
+        }
       } else {
-        // 펼침: 해당 동 젤 위 + 접기 버튼(펼치기 있던 자리) + 나머지 오름차순
-        bodyHtml = pinnedHtml +
-          '<button class="dest-expand-btn" onclick="collapseDestPriority()">접기</button>' +
-          restHtml;
+        const rest = items.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
+        const pinnedHtml = pinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
+        const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
+        if (!destExpanded) {
+          const list = pinned.length ? pinned : items;
+          bodyHtml = list.map(item => cardHtml({ item, d: 0, near: true }, false)).join('') +
+            ((pinned.length > 0 && items.length > pinned.length)
+              ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
+        } else {
+          bodyHtml = pinnedHtml +
+            '<button class="dest-expand-btn" onclick="collapseDestPriority()">접기</button>' +
+            restHtml;
+        }
       }
     } else {
       bodyHtml = items.slice().sort((a, b) => cmpDong(a, b)).map(item => cardHtml({ item, d: 0, near: true }, false)).join('');

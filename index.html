@@ -1061,8 +1061,10 @@
     const qCha = (String(rawQuery).match(/([0-9]+)\s*차/) || [])[1];
     const nCha = (String(item.name || '').match(/([0-9]+)\s*차/) || [])[1];
     if (qCha && qCha !== nCha) return 0;
+    const qNoSpace = String(rawQuery).toLowerCase().replace(/\s+/g, '');
+    const nNoSpace = nameTarget.replace(/\s+/g, '');
     const target = (item.name + ' ' + item.dong + ' ' + item.addr).toLowerCase();
-    let pos = 0, matched = 0, penalty = 0, meaningful = 0;
+    let pos = 0, matched = 0, penalty = 0, meaningful = (nNoSpace.length >= 4 && qNoSpace.includes(nNoSpace)) ? 1 : 0;
     for (const tk of tokens) {
       const core = tk.replace(/[0-9.-]+(동|호|차|단지|층|번길|번지|번|라인)?/g, '').replace(/^[a-z가-힣](동|호|차|단지|층|라인)$/, '');
       const idx = target.indexOf(tk, pos);

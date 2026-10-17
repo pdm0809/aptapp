@@ -1134,6 +1134,15 @@
     const targetStr = (itemName + itemDong + String(item.addr || '')).toLowerCase().replace(/\s+/g, "");
     const nameStr = itemName.toLowerCase().replace(/\s+/g, "");
 
+    // 초성 매칭: "소희"(ㅅㅎ) → "서희스타힐스" (음성인식 오인식 대응)
+    const qChosung = getChosung(String(query).replace(/\s+/g, '')).replace(/[^ㄱ-ㅎ]/g, '');
+    if (qChosung.length >= 2) {
+      const tChosung = getChosung((itemName).replace(/\s+/g, ''));
+      if (tChosung.includes(qChosung)) {
+        return 45;  // 초성 매칭은 45점 (기준선 50점 아래, 다른 신호와 결합 시 유효)
+      }
+    }
+
     // [4단계] 오타 보정 — "N단지"/"N차" 지정이 있으면 이름 기준으로 엄격 판정
     const qDesig = query.match(/(\d+)(단지|차)/);
     if (qDesig) {

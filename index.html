@@ -1020,6 +1020,15 @@
     const tokens = String(rawQuery).toLowerCase().split(/\s+/).filter(t => t.length > 0);
     if (tokens.length < 2) return 0;
     const nameTarget = String(item.name || '').toLowerCase();
+    // 차수 충돌 게이트: 차수(2차/4차)는 단지명의 일부이자 실제로 다른 단지(주소 다름).
+    // 검색어에 차수가 있으면 후보 단지명도 같은 차수여야 함 (없거나 다르면 탈락).
+    // ※ 스케치(qCha && nCha && ...)에서 강화: 차수 없는 후보도 제외해야
+    //   '한신 2차 205동' → '펜타시티 한신더휴 2차' 단일 매칭이 성립함.
+    //   과탈락 시 하위 티어(초성→오타보정)로 폴백되므로 안전.
+    // 동/호수(205동·403호)는 호실 정보라 기존 감점 유지.
+    const qCha = (String(rawQuery).match(/([0-9]+)\s*차/) || [])[1];
+    const nCha = (String(item.name || '').match(/([0-9]+)\s*차/) || [])[1];
+    if (qCha && qCha !== nCha) return 0;
     const target = (item.name + ' ' + item.dong + ' ' + item.addr).toLowerCase();
     let pos = 0, matched = 0, penalty = 0, meaningful = 0;
     for (const tk of tokens) {
@@ -1389,18 +1398,72 @@
     });
     const vq = voiceQuery;
     voiceQuery = null;   // P5: 1회 소비
+    const rawVal = document.getElementById('search-input').value;
+    if (!searchVal) {
+      searchFoldState = { qKey: '', expanded: false, pins: [] };
+    } else if (searchFoldState.qKey !== searchVal) {
+      searchFoldState = { qKey: searchVal, expanded: false, pins: (vq && vq.pinDongs) ? vq.pinDongs.slice() : [] };
+    } else if (vq && vq.pinDongs && vq.pinDongs.length) {
+      searchFoldState.pins = vq.pinDongs.slice();
+    }
     if (rows.length === 0 && searchVal && vq) {
       renderVoiceNoMatch(container, vq);
     } else if (rows.length === 0) {
       container.innerHTML = `<div style="color:#555; text-align:center; margin-top:50px;">${searchVal ? '검색 결과가 없습니다.' : '주변 ' + searchRadius + 'm 이내 없음'}</div>`;
     } else {
-      const pins = (vq && vq.pinDongs) || [];
+      const uniqNames = [...new Set(filtered.map(i => String(i.name || '')).filter(Boolean))];
+      const pins = searchFoldState.pins || [];
+      if (searchVal && uniqNames.length === 1) {
+        const allCItems = complexItems(uniqNames[0]);
+        const pinnedItems = matchSearchDongItems(rawVal, allCItems, pins);
+        if (pinnedItems.length > 0 && allCItems.length > pinnedItems.length) {
+          const pinnedSet = new Set(pinnedItems);
+          const restItems = allCItems.filter(i => !pinnedSet.has(i)).sort((a, b) => cmpDong(a, b));
+          const toRow = item => {
+            const d = hasFix ? getDist(item.lat, item.lon) : 999999;
+            return { item, d, near: hasFix && d <= searchRadius };
+          };
+          const pinnedHtml = pinnedItems.slice().sort((a, b) => cmpDong(a, b)).map(i => cardHtml(toRow(i), true)).join('');
+          const restHtml = restItems.map(i => cardHtml(toRow(i), true)).join('');
+          if (!searchFoldState.expanded) {
+            container.innerHTML = pinnedHtml + '<button class="dest-expand-btn" onclick="expandSearchDong()">전체 동 펼치기 (' + restItems.length + '개)</button>';
+          } else {
+            container.innerHTML = pinnedHtml + '<button class="dest-expand-btn" onclick="collapseSearchDong()">접기</button>' + restHtml;
+          }
+          return;
+        }
+      }
       const pinned = pins.length && rows.some(r => dongPinIndex(r.item.dong, pins) < 999)
         ? rows.map((r, k) => ({ r, k, p: dongPinIndex(r.item.dong, pins) })).sort((a, b) => (a.p - b.p) || cmpDong(a.r.item, b.r.item)).map(x => x.r)
         : rows;   // 음성 동 핀: 해당 동 우선, 나머지는 cmpDong 오름차순
       container.innerHTML = pinned.map(r => cardHtml(r, true)).join('');
     }
   }
+  let searchFoldState = { qKey: '', expanded: false, pins: [] };
+  function matchSearchDongItems(rawQuery, items, pins) {
+    const tokens = [];
+    (pins || []).forEach(p => { if (p && !tokens.includes(p)) tokens.push(p); });
+    const m = String(rawQuery || '').match(/(\d{1,4})\s*동/g);
+    if (m) m.forEach(x => { const d = x.replace(/\s+/g, ''); if (!tokens.includes(d)) tokens.push(d); });
+    String(rawQuery || '').split(/\s+/).forEach(t => {
+      if (!t) return;
+      const tl = t.toLowerCase();
+      if (items.some(i => { const d = String(i.dong || '').trim().toLowerCase(); return d && (d === tl || d.startsWith(tl + ' ')); })) {
+        if (!tokens.includes(tl)) tokens.push(tl);
+      }
+    });
+    if (!tokens.length) return [];
+    return items.filter(i => {
+      const d = String(i.dong || '').trim();
+      const dn = d.replace(/\s+/g, '').toLowerCase();
+      return d && tokens.some(tk => {
+        const tkn = String(tk).replace(/\s+/g, '').toLowerCase();
+        return dn === tkn || dn.indexOf(tkn) === 0 || tkn.indexOf(dn) === 0 || d.toLowerCase().startsWith(String(tk).toLowerCase() + ' ');
+      });
+    });
+  }
+  function expandSearchDong() { searchFoldState.expanded = true; refreshDisplay(); }
+  function collapseSearchDong() { searchFoldState.expanded = false; refreshDisplay(); }
 
   // ===== 콜드스타트: GPS 미확보 상태에서 WPS(WiFi 측위) 기반 단지 순위화 / 단지 선택 =====
   // 이전 위치·저장 단지는 절대 복원하지 않는다 (전지역 이동 사용자 실측 실패)

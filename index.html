@@ -77,6 +77,7 @@
     .dest-banner { background:#08131a; border:1.5px solid var(--accent); color:var(--accent); font-size:14px; font-weight:bold; padding:12px; border-radius:10px; margin-bottom:8px; text-align:center; cursor:pointer; }
     .dest-x { color:var(--accent); font-weight:bold; padding:0 8px; cursor:pointer; }
     .dest-priority-head { background:#08131a; border:1.5px solid var(--accent); color:var(--accent); font-size:15px; font-weight:bold; padding:12px; border-radius:10px; margin-bottom:8px; text-align:center; }
+    .dest-gps-head { background:#141416; border:1.5px solid #444; color:var(--text); font-size:15px; font-weight:bold; padding:12px; border-radius:10px; margin:16px 0 8px; text-align:center; }
     .dest-expand-btn { display:block; width:100%; margin-top:10px; padding:12px; font-size:14px; font-weight:bold; border-radius:10px; border:1px solid #444; background:#222; color:var(--accent); cursor:pointer; }
     .pair-row { display:flex; justify-content:center; align-items:center; gap:6px; padding:8px 5px; font-size:11px; color:#777; }
     .pair-row input { width:90px; padding:6px 8px; font-size:12px; margin:0; text-align:center; letter-spacing:2px; }
@@ -1013,17 +1014,27 @@
   }
 
   // [2단계] 토큰 순서 매칭: "펜타 한신 2차" → "펜타시티 한신더휴 2차" (중간 단어 생략 허용)
+  // 건물명 의미 토큰(item.name 내 2글자 이상, 1음절·숫자·동/호수/차수/단지 등 제외)이 1개 이상 매칭되면
+  // 호수/동/숫자 불일치(-5) 및 일반 단어 불일치(-6) 시 탈락시키지 않고 감점 적용
   function tokenSubseqScore(rawQuery, item) {
     const tokens = String(rawQuery).toLowerCase().split(/\s+/).filter(t => t.length > 0);
     if (tokens.length < 2) return 0;
+    const nameTarget = String(item.name || '').toLowerCase();
     const target = (item.name + ' ' + item.dong + ' ' + item.addr).toLowerCase();
-    let pos = 0;
+    let pos = 0, matched = 0, penalty = 0, meaningful = 0;
     for (const tk of tokens) {
+      const core = tk.replace(/[0-9.-]+(동|호|차|단지|층|번길|번지|번|라인)?/g, '').replace(/^[a-z가-힣](동|호|차|단지|층|라인)$/, '');
       const idx = target.indexOf(tk, pos);
-      if (idx < 0) return 0;
+      if (idx < 0) {
+        penalty += core.length < 2 ? 5 : 6;
+        continue;
+      }
+      matched++;
       pos = idx + tk.length;
+      if (core.length >= 2 && idx + tk.length <= nameTarget.length) meaningful++;
     }
-    return 40 + tokens.length * 5;
+    if (meaningful === 0) return 0;
+    return Math.max(0, 40 + matched * 5 - penalty);
   }
 
   // [3단계] 초성 매칭: "ㅍㅌㅅㅌ" → "펜타시티"
@@ -1510,7 +1521,7 @@
   function clearPairCode() {
     try { localStorage.removeItem('rider_pair_code'); } catch (e) {}
     destInfo = null; destDismissed = false; destFetchDone = false; destExpanded = false;
-    renderDestBanner(); renderPairRow();
+    renderDestBanner(); renderPairRow(); refreshDisplay();
   }
   async function maybeFetchDestination() {
     if (destFetchDone) return;
@@ -1631,12 +1642,25 @@
     } else {
       bodyHtml = items.slice().sort((a, b) => cmpDong(a, b)).map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
     }
-    container.innerHTML =
+    const destHtml =
       '<div class="dest-priority-head">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt +
       ' <span class="dest-x" onclick="dismissDestPriority(event)">✕</span></div>' +
       bodyHtml;
-    lastRender = null;
-    return true;
+    let destSec = container.querySelector('#dest-priority-sec');
+    let gpsBox = container.querySelector('#dest-gps-body');
+    if (!destSec || !gpsBox) {
+      const prevGpsHtml = container.innerHTML;
+      container.innerHTML =
+        '<div id="dest-priority-sec"></div>' +
+        '<div class="dest-gps-head">📍 현재 위치</div>' +
+        '<div id="dest-gps-body"></div>';
+      destSec = container.querySelector('#dest-priority-sec');
+      gpsBox = container.querySelector('#dest-gps-body');
+      gpsBox.innerHTML = prevGpsHtml;
+      lastRender = null;
+    }
+    if (destSec.innerHTML !== destHtml) destSec.innerHTML = destHtml;
+    return gpsBox;
   }
   function dismissDestPriority(e) { if (e && e.stopPropagation) e.stopPropagation(); destDismissed = true; renderDestBanner(); refreshDisplay(); }
   function expandDestPriority() { destExpanded = true; refreshDisplay(); }
@@ -1746,9 +1770,12 @@
 
   // 운행 모드 렌더링: 거리 1회 계산 → 이탈 지연 필터 → 정렬 → (변화 없으면) 렌더 생략
   function renderMain(container) {
-    // 배달 목적지 우선: 페어링 + 매칭된 목적지가 있으면 GPS 상태와 무관하게 최우선 표시
-    if (isDestPriorityActive()) {
-      if (renderDestPriority(container)) return;
+    // 배달 목적지 우선: 페어링 + 매칭된 목적지가 있으면 목적지 섹션 밑에 현재 GPS 결과도 함께 렌더링
+    const gpsBox = isDestPriorityActive() ? renderDestPriority(container) : null;
+    if (gpsBox) {
+      container = gpsBox;
+    } else if (container.querySelector('#dest-priority-sec')) {
+      lastRender = null;
     }
     const hasFix = Number.isFinite(myLat) && Number.isFinite(myLon);
     if (!isGpsReady && !hasFix) {

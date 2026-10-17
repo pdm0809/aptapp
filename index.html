@@ -1956,7 +1956,7 @@
     lastInAt.forEach((t, k) => { if (now - t > HYST_MS) lastInAt.delete(k); });
     const rows = scored
       .filter(s => s.d <= searchRadius || (shownKeys.has(s.k) && s.d <= exitR && lastInAt.has(s.k)))
-      .sort((a, b) => a.d - b.d);
+      .sort((a, b) => (a.item.name || '').localeCompare(b.item.name || '', 'ko') || cmpDong(a.item, b.item));
     rows.forEach(r => { r.near = r.d <= searchRadius; });
     const approach = updatePrefetch(scored, rows, now);
 

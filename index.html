@@ -1711,8 +1711,15 @@
     return { name: sorted[0][0] };
   }
   function extractDong(addr) {
-    const m = String(addr||'').match(/(\d{1,4})\s*동/);
-    return m ? m[1] + '동' : null;
+    const s = String(addr||'');
+    // "202동" 형식
+    let m = s.match(/(\d{1,4})\s*동/);
+    if (m) return m[1] + '동';
+    // "202-2405", "202/2405" 형식 (동-호수, '동' 자 없음)
+    // 단, 도로명 번지("단지로 25")와 구분: 하이픈 앞뒤 모두 숫자이고 뒤가 3~4자리 호수일 때만
+    m = s.match(/(\d{2,4})\s*[-/]\s*(\d{3,4})(?:\s*호)?/);
+    if (m) return m[1] + '동';
+    return null;
   }
   function extractPlaceKeyword(addr) {
     let s = String(addr||'').replace(/\([^)]*\)/g, ' ');

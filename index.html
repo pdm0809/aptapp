@@ -1956,7 +1956,12 @@
     lastInAt.forEach((t, k) => { if (now - t > HYST_MS) lastInAt.delete(k); });
     const rows = scored
       .filter(s => s.d <= searchRadius || (shownKeys.has(s.k) && s.d <= exitR && lastInAt.has(s.k)))
-      .sort((a, b) => (a.item.name || '').localeCompare(b.item.name || '', 'ko') || cmpDong(a.item, b.item));
+      .sort((a, b) => {
+        // 신호끊김/약함 지역(정확도 30m 초과)에서만 동 오름차순, 그 외는 거리순
+        const weak = Number.isFinite(myAcc) && myAcc > 30;
+        if (weak) return (a.item.name || '').localeCompare(b.item.name || '', 'ko') || cmpDong(a.item, b.item);
+        return a.d - b.d;
+      });
     rows.forEach(r => { r.near = r.d <= searchRadius; });
     const approach = updatePrefetch(scored, rows, now);
 

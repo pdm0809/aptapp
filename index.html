@@ -835,6 +835,8 @@
     prewarmJamo();   // P3: 오타 보정용 자모 분해 사전 캐싱
     if (coldView && coldView.needData) coldChecked = false;  // 데이터 로드 후 콜드 판정 재시도
     maybeFetchDestination();
+    // 새 데이터 도착 시 기존 nomatch 배달 주소를 다시 매칭 (캐시 데이터로 실패했던 경우 구제)
+    if (destRawAddr && destInfo && destInfo.type === 'nomatch') rematchDestination();
     refreshDisplay();
   }
   
@@ -1615,7 +1617,7 @@
   }
   // ===== 배달 목적지 자동 표시 (페어링 사용자 전용) =====
   const DEST_FRESH_MS = 90 * 60 * 1000;
-  let destFetchDone = false, destDismissed = false, destInfo = null, pairExpanded = false, destExpanded = false;
+  let destFetchDone = false, destDismissed = false, destInfo = null, pairExpanded = false, destExpanded = false, destRawAddr = '';
   function getPairCode() {
     const c = String(localStorage.getItem('rider_pair_code') || '').trim().toUpperCase();
     return /^[A-Z0-9]{6}$/.test(c) ? c : null;
@@ -1633,12 +1635,12 @@
     const c = String((inp && inp.value) || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{6}$/.test(c)) { showMsg('6자리 코드를 입력해 주세요.'); return; }
     try { localStorage.setItem('rider_pair_code', c); } catch (e) {}
-    pairExpanded = false; destFetchDone = false; destDismissed = false; destInfo = null; destExpanded = false;
+    pairExpanded = false; destFetchDone = false; destDismissed = false; destInfo = null; destExpanded = false; destRawAddr = '';
     renderPairRow(); maybeFetchDestination();
   }
   function clearPairCode() {
     try { localStorage.removeItem('rider_pair_code'); } catch (e) {}
-    destInfo = null; destDismissed = false; destFetchDone = false; destExpanded = false;
+    destInfo = null; destDismissed = false; destFetchDone = false; destExpanded = false; destRawAddr = '';
     renderDestBanner(); renderPairRow(); refreshDisplay();
   }
   async function maybeFetchDestination() {
@@ -1652,13 +1654,21 @@
       const addr = String((j && j.address) || '').trim();
       const t = Date.parse(j && j.created_at);
       if (!addr || !Number.isFinite(t) || (Date.now() - t) > DEST_FRESH_MS) return;
-      const m = matchAddressToComplex(addr);
-      const dong = extractDong(addr);
-      destInfo = m ? { type:'match', name:m.name, dong: dong, address: addr }
-                   : { type:'nomatch', address: addr, keyword: extractPlaceKeyword(addr) };
-      destDismissed = false; destExpanded = false;
-      renderDestBanner(); refreshDisplay();
+      destRawAddr = addr;  // 새 데이터 도착 시 재매칭용으로 보관
+      rematchDestination();
     } catch (e) {}
+  }
+  // 저장된 배달 주소를 현재 allData로 다시 매칭 (데이터 갱신 시 nomatch 구제용)
+  function rematchDestination() {
+    if (!destRawAddr) return;
+    const m = matchAddressToComplex(destRawAddr);
+    const dong = extractDong(destRawAddr);
+    const wasMatch = destInfo && destInfo.type === 'match';
+    destInfo = m ? { type:'match', name:m.name, dong: dong, address: destRawAddr }
+                 : { type:'nomatch', address: destRawAddr, keyword: extractPlaceKeyword(destRawAddr) };
+    // nomatch→match로 바뀌었거나 처음 매칭이면 배너 갱신
+    if (!wasMatch) { destDismissed = false; destExpanded = false; }
+    renderDestBanner(); refreshDisplay();
   }
   // 도로명 주소 파싱: 원본(공백 유지) 텍스트에서 파싱해야 번지·동 숫자가 합쳐지지 않음
   // "남옥로 20", "소티재로151번길 21", "도음로827번길 9" → {road, num}

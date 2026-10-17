@@ -1723,7 +1723,7 @@
     // 도로명 어간 (로/길 제거) — 지번/도로명 혼용 대응 ("이인로" → "이인", DB "이인리"와 매칭)
     const roadStem = roadName.replace(/(로|길)$/, '');
     const scored = new Map();
-    const nameHit = (name, sc) => { if (name) scored.set(name, Math.max(scored.get(name)||0, sc)); };
+    const nameHit = (name, sc) => { const tn = String(name||'').trim(); if (tn) scored.set(tn, Math.max(scored.get(tn)||0, sc)); };
     (allData||[]).forEach(it => {
       const nm = String(it.name||''); if (!nm) return;
       const nn = norm(nm);

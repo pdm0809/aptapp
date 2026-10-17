@@ -1663,8 +1663,9 @@
     if (!destRawAddr) return;
     const m = matchAddressToComplex(destRawAddr);
     const dong = extractDong(destRawAddr);
+    const hosu = extractHosu(destRawAddr);
     const wasMatch = destInfo && destInfo.type === 'match';
-    destInfo = m ? { type:'match', name:m.name, dong: dong, address: destRawAddr }
+    destInfo = m ? { type:'match', name:m.name, dong: dong, hosu: hosu, address: destRawAddr }
                  : { type:'nomatch', address: destRawAddr, keyword: extractPlaceKeyword(destRawAddr) };
     // nomatch→match로 바뀌었거나 처음 매칭이면 배너 갱신
     if (!wasMatch) { destDismissed = false; destExpanded = false; }
@@ -1721,6 +1722,15 @@
     if (m) return m[1] + '동';
     return null;
   }
+  function extractHosu(addr) {
+    const s = String(addr||'');
+    // "202-2405", "202/2405", "202동 2405호" 형식에서 호수 추출
+    let m = s.match(/(?:\d{1,4}\s*동\s*)?(\d{3,4})\s*호/);
+    if (m) return m[1];
+    m = s.match(/\d{2,4}\s*[-/]\s*(\d{3,4})/);
+    if (m) return m[1];
+    return null;
+  }
   function extractPlaceKeyword(addr) {
     let s = String(addr||'').replace(/\([^)]*\)/g, ' ');
     const m = s.match(/(?:로|길)\s*\d+(?:번길\s*\d+)?(?:-\d+)?\s*(.*)$/);
@@ -1751,7 +1761,8 @@
     let html;
     if (destInfo.type === 'match') {
       const dongTxt = destInfo.dong ? ' ' + esc(destInfo.dong) : '';
-      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt + ' <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
+      const hosuTxt = destInfo.hosu ? ' ' + esc(destInfo.hosu) + '호' : '';
+      html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt + hosuTxt + ' <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
     } else {
       html = '<div class="dest-banner" onclick="onDestBannerTap()">📦 배달: ' + esc(destInfo.address.slice(0,20)) + '… <span class="dest-x" onclick="dismissDestBanner(event)">✕</span></div>';
     }
@@ -1762,12 +1773,22 @@
     if (!items.length) return false;  // 방어: 단지 데이터 없으면 일반 렌더로 폴백
     const dong = destInfo.dong ? String(destInfo.dong).replace(/\s+/g, '') : '';
     const dongTxt = destInfo.dong ? ' ' + esc(destInfo.dong) : '';
+    const hosuTxt = destInfo.hosu ? ' ' + esc(destInfo.hosu) + '호' : '';
     let bodyHtml = '';
     if (dong) {
       const pinned = items.filter(i => {
         const d = String(i.dong || '').replace(/\s+/g, '');
         return d && (d.indexOf(dong) === 0 || dong.indexOf(d) === 0);
       });
+      // 호수가 있으면 해당 호수 항목을 맨 위로
+      if (destInfo.hosu) {
+        const hs = destInfo.hosu;
+        pinned.sort((a, b) => {
+          const am = String(a.pw || '').includes(hs) ? 0 : 1;
+          const bm = String(b.pw || '').includes(hs) ? 0 : 1;
+          return am - bm || cmpDong(a, b);
+        });
+      }
       const rest = items.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
       const pinnedHtml = pinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
       const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
@@ -1787,7 +1808,7 @@
       bodyHtml = items.slice().sort((a, b) => cmpDong(a, b)).map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
     }
     const destHtml =
-      '<div class="dest-priority-head">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt +
+      '<div class="dest-priority-head">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt + hosuTxt +
       ' <span class="dest-x" onclick="dismissDestPriority(event)">✕</span></div>' +
       bodyHtml;
     let destSec = container.querySelector('#dest-priority-sec');

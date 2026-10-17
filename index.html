@@ -1098,7 +1098,7 @@
     if (qCha && qCha !== nCha) return 0;
     const qNoSpace = String(rawQuery).toLowerCase().replace(/\s+/g, '');
     const nNoSpace = nameTarget.replace(/\s+/g, '');
-    const nTokens = nameTarget.split(/\s+/).filter(t => t.length >= 2);
+    const nTokens = nameTarget.split(/\s+/).filter(t => t.length >= 3 && !/^\d+차$/.test(t));
     const revMatch = nNoSpace.length >= 4 && qNoSpace.includes(nNoSpace);
     const tokenRevMatch = nTokens.some(nt => qNoSpace.includes(nt));
     const target = (item.name + ' ' + item.dong + ' ' + item.addr).toLowerCase();

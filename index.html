@@ -226,6 +226,7 @@
   const VOICE_CLEAR_SCORE = 50, VOICE_CLEAR_GAP = 8; // P8: 명확성 게이트 (1위 점수 / 1-2위 격차)
   const EXACT_MATCH_SCORE = 60;             // 정확일치 분기 고정 점수 (P2/P8 비교용)
   let lastGood = null, pendingJump = null;       // lastGood = {lat, lon, acc, t}
+  let degradedPos = null;  // Degraded 모드 어림 위치 {lat, lon, acc, t} — 표시 전용, myLat/myLon/lastGood/앵커/latch/자동선택에 사용 금지
   let jumpRejected = null;                       // Sanity Gate 거부 기록 (상태 표시용)
   let usingSavedPos = null;                      // GPS 미확보 시 사용 중인 저장 위치
   let latch = null, latchSuppressed = false;     // 지하 진입 고정 상태
@@ -283,7 +284,39 @@
     gpsErr = null; lastAcc = acc;
     coarseLat = lat; coarseLon = lon; coarseAcc = c.accuracy; coarseT = now;  // 음성 위치 가산 전용 — 거절 전 기록
     if (acc > ACC_COLLAPSE) maybeLatch();
-    if (acc > ACC_REJECT) { updateStatus(); return; }   // 정확도 불량: 위치 갱신 거부
+    if (acc > ACC_REJECT) {
+      // Degraded 모드 (2026-10-17): 정확도는 나쁘지만 Sanity Gate 통과 시 어림 위치로 표시
+      // 오염된 Wi-Fi 위치(3km 점프)가 어림 목록에 침투하지 못하도록 게이트를 먼저 적용
+      const staleD = lastGood && now - lastGood.t > STALE_MS;
+      const ugOrLatchD = !!(latch || staleD);
+      const gateD = isPlausibleFromAnchor(lat, lon, acc, now, ugOrLatchD);
+      if (!gateD.ok) {
+        jumpRejected = { lat, lon, acc, dist: gateD.dist, allowedDist: gateD.allowedDist, t: now };
+        degradedPos = null;
+        updateStatus();
+        return;
+      }
+      jumpRejected = null;
+      // degradedPos는 표시 전용. myLat/myLon/lastGood/앵커/latch/자동선택에 절대 사용 금지
+      degradedPos = { lat, lon, acc, t: now };
+      // P0-2: coldView 활성 중이면 wpsCands도 갱신 (뒤늦게 오는 Wi-Fi 위치를 후보 칩으로)
+      if (coldView && !coldDismissed && !(latch && (latch.kind === 'wps' || latch.kind === 'pick'))) {
+        try {
+          const rankedD = wpsCandidates(lat, lon, acc);
+          if (rankedD && rankedD.length) {
+            coldView.wpsCands = rankedD.slice(0, (typeof WPS_CANDIDATE_N !== 'undefined' ? WPS_CANDIDATE_N : 3));
+            coldView.wpsLat = lat; coldView.wpsLon = lon; coldView.wpsAcc = acc;
+            coldView.wpsPending = false;
+            if (coldView.type === 'wps-pending') coldView.type = 'wps-pick';
+          }
+        } catch (e) {}
+      }
+      updateStatus();
+      refreshDisplay();
+      return;
+    }
+    // 정상 정확도 경로: 신뢰 위치 확보 시 degraded 모드 해제
+    degradedPos = null;
 
     // Sanity Gate (2026-10-17): 앵커 대비 물리적 이동 가능 거리 검증 — 3km 점프 원천 차단
     // 수동 선택(pick) 래치는 사용자 명시 선택이므로 게이트 제외
@@ -1883,11 +1916,50 @@
     coldSearchList = [...new Set(searchItems(q).map(i => String(i.name || '')).filter(Boolean))].slice(0, 8);
     res.innerHTML = coldSearchList.map((n, i) => `<button class="chip" onclick="pickSearch(${i})">${esc(n)}</button>`).join('');
   }
+  // Degraded 모드 렌더 (2026-10-17): 정확도 불량 위치를 어림 위치로 표시
+  // 자동선택·래치·앵커·lastGood에는 사용 안 함 (표시 전용)
+  let degradedNameList = [];
+  function pickDegraded(i) {
+    const n = degradedNameList[i];
+    if (n) showComplexRows(n);
+  }
+  function renderDegradedView(container) {
+    const d = degradedPos;
+    if (!d) { renderColdView(container); return; }
+    const now = Date.now();
+    // 30초 이상 된 어림 위치는 만료
+    if (now - d.t > 30000) { degradedPos = null; renderColdView(container); return; }
+    // 한글 입력 중이면 다시 그리지 않음 (IME 조합 보호)
+    const searchFocused = document.activeElement && document.activeElement.id === 'cold-search';
+    if (searchFocused && lastRender && lastRender.degraded) return;
+    const radiusM = Math.max(searchRadius, d.acc * 2);
+    // 단지 단위로 묶어서 거리순 정렬 (행 단위가 아닌 단지 단위)
+    degradedNameList = complexNames()
+      .map(n => ({ name: n, d: complexMinDist(n, d.lat, d.lon) }))
+      .filter(h => h.d <= radiusM)
+      .sort((a, b) => a.d - b.d || a.name.localeCompare(b.name, 'ko'))
+      .map(h => h.name);
+    const prevQ = (document.getElementById('cold-search') || {}).value || '';
+    let html = '';
+    html += `<div class="cold-status">📶 어림 위치 (±${Math.round(d.acc)}m) — 정확도가 낮아 참고용으로 표시됩니다</div>`;
+    if (!degradedNameList.length) {
+      html += `<div class="cold-status">주변 ${Math.round(radiusM)}m 내 단지가 없습니다. 반경을 넓혀보세요.</div>`;
+    } else {
+      html += `<div class="cold-sec">📶 어림 위치 근처 단지 (${degradedNameList.length}개)</div><div class="chip-row">` +
+        degradedNameList.slice(0, 20).map((n, i) => `<button class="chip" onclick="pickDegraded(${i})">${esc(n)}</button>`).join('') + `</div>`;
+    }
+    html += `<div class="cold-sec">단지 검색</div><input type="text" id="cold-search" placeholder="단지명 입력" autocomplete="off" value="${esc(prevQ)}" oninput="coldSearch(this.value)"><div id="cold-search-res" class="chip-row" style="margin-top:6px;"></div>`;
+    container.innerHTML = html;
+    if (prevQ) coldSearch(prevQ);
+    lastRender = { degraded: true }; lastShown = [];
+    updateStatus();
+  }
   function renderColdView(container) {
     const v = coldView || { type: 'hybrid' };
     const prevQ = (document.getElementById('cold-search') || {}).value || '';  // 재렌더 시 입력 중인 검색어 유지
     let html = '';
-    html += `<div class="cold-status">${v.wpsPending ? '📡 위치 확인 중...' : '📡 GPS 신호 없음 — 아래에서 단지를 선택하세요'}</div>`;
+    const hasWifiPosD = Number.isFinite(lastAcc) && lastAcc > 0;
+    html += `<div class="cold-status">${v.wpsPending ? '📡 위치 확인 중...' : (hasWifiPosD ? '📡 GPS 없음 · Wi-Fi 어림 위치 수신 중 — 아래에서 단지를 선택하세요' : '📡 GPS 신호 없음 — 아래에서 단지를 선택하세요')}</div>`;
     // 대응 1 (2026-10-17): 1순위 — 직전 지상 위치 근처 단지 원터치 칩 (10분 이내 신뢰 GPS 기준)
     const anchor = loadTrustedGps();
     if (anchor && Date.now() - anchor.t < SANITY_TTL_MS) {
@@ -2010,6 +2082,7 @@
     }
     if (!hasFix && !coldChecked) coldBootCheck();
     if (latch) { renderLatchView(container); return; }
+    if (!hasFix && degradedPos) { renderDegradedView(container); return; }
     if (!hasFix && coldView) { renderColdView(container); return; }
     const ref = hasFix ? { lat: myLat, lon: myLon } : getSavedPos();
     usingSavedPos = hasFix ? null : ref;

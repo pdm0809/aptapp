@@ -1063,8 +1063,11 @@
     if (qCha && qCha !== nCha) return 0;
     const qNoSpace = String(rawQuery).toLowerCase().replace(/\s+/g, '');
     const nNoSpace = nameTarget.replace(/\s+/g, '');
+    const nTokens = nameTarget.split(/\s+/).filter(t => t.length >= 2);
+    const revMatch = nNoSpace.length >= 4 && qNoSpace.includes(nNoSpace);
+    const tokenRevMatch = nTokens.some(nt => qNoSpace.includes(nt));
     const target = (item.name + ' ' + item.dong + ' ' + item.addr).toLowerCase();
-    let pos = 0, matched = 0, penalty = 0, meaningful = (nNoSpace.length >= 4 && qNoSpace.includes(nNoSpace)) ? 1 : 0;
+    let pos = 0, matched = 0, penalty = 0, meaningful = (revMatch || tokenRevMatch) ? 1 : 0;
     for (const tk of tokens) {
       const core = tk.replace(/[0-9.-]+(동|호|차|단지|층|번길|번지|번|라인)?/g, '').replace(/^[a-z가-힣](동|호|차|단지|층|라인)$/, '');
       const idx = target.indexOf(tk, pos);

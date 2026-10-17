@@ -1,4 +1,4 @@
-const CACHE = 'aptapp-v33';
+const CACHE = 'aptapp-v34';
 const SHELL = ['./', 'index.html', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 const SHELL_URLS = SHELL.map((p) => new URL(p, self.registration.scope).href);
 

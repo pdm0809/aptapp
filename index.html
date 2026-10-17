@@ -1807,10 +1807,10 @@
       if (!da) return;
       if (roadName && da.includes(roadName)) {
         if (roadNum && da.includes(roadName + roadNum)) nameHit(nm, 100);
-        else if (emd && da.includes(emd)) nameHit(nm, 60);  // 읍면동+도로명 (번호 형식 불일치 대응)
-        else nameHit(nm, 40);
+        else if (emd && da.includes(emd)) nameHit(nm, 40);  // 읍면동+도로명만으로는 매칭 안 됨 (다른 건물 오탐 방지)
+        else nameHit(nm, 30);
       } else if (roadStem && roadStem.length >= 2 && emd && da.includes(emd) && da.includes(roadStem)) {
-        nameHit(nm, 55);  // 지번/도로명 혼용: 읍면동 + 도로명 어간
+        nameHit(nm, 40);  // 지번/도로명 혼용: 읍면동 + 도로명 어간 (단독으로는 매칭 안 됨)
       }
     });
     if (!scored.size) return null;

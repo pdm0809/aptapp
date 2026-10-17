@@ -73,6 +73,7 @@
     .chip-row { display:flex; flex-wrap:wrap; gap:6px; }
     .chip { background:#222; color:#fff; border:1px solid #444; border-radius:20px; padding:8px 14px; font-size:13px; cursor:pointer; }
     .chip small { color:#999; font-size:11px; }
+    .chip-anchor { background:#1a3a1a; border-color:#4a4; }  /* 직전 위치 칩 (2026-10-17) */
     .cold-x { color:var(--common); font-weight:bold; padding:0 8px; cursor:pointer; }
     .dest-banner { background:#08131a; border:1.5px solid var(--accent); color:var(--accent); font-size:14px; font-weight:bold; padding:12px; border-radius:10px; margin-bottom:8px; text-align:center; cursor:pointer; }
     .dest-x { color:var(--accent); font-weight:bold; padding:0 8px; cursor:pointer; }
@@ -201,6 +202,11 @@
   const SNACK_MS = 5000;                   // 실측 튜닝 전 잠정치 — 스낵바 자동 소멸
   const COLD_EXIT_STREAK = 3, COLD_EXIT_MOVE_M = 30; // 실측 튜닝 전 잠정치 — 지상 탈출 판정
   const RECENT_MAX = 10, RECENT_CHIP_N = 5; // 실측 튜닝 전 잠정치
+  // ===== Sanity Gate (2026-10-17): 물리적 이동 반경 검증 — 서희스타힐스급 3km 점프 원천 차단 =====
+  const TRUSTED_GPS_KEY = 'last_trusted_gps'; // 고신뢰 GPS만 별도 저장 (오염 Wi-Fi와 분리)
+  const SANITY_TTL_MS = 10 * 60 * 1000;      // 앵커 유효 시간 (10분 초과 시 게이트 만료)
+  const WALK_SPEED_MPS = 3.0;               // 지하/래치 상태 이동 속도 상한 (보행 기준)
+  const UNDERGROUND_RADIUS_CAP_M = 250;     // 지하/래치 상태에서 허용 최대 반경 (주차장 규모 상한)
   // ===== 음성 검색 정확도 (P1~P5, P8) — 전부 실측 튜닝 전 잠정치 =====
   const VOICE_TRAILING_WORDS = ['찾아줘','알려줘','검색해줘','보여줘','어디야','어딘지','비밀번호','비번','알려주세요','찾아주세요','보여주세요','주세요']
     .sort((a, b) => b.length - a.length);  // P1: 문미 불용어 (긴 것 우선 제거)
@@ -220,6 +226,7 @@
   const VOICE_CLEAR_SCORE = 50, VOICE_CLEAR_GAP = 8; // P8: 명확성 게이트 (1위 점수 / 1-2위 격차)
   const EXACT_MATCH_SCORE = 60;             // 정확일치 분기 고정 점수 (P2/P8 비교용)
   let lastGood = null, pendingJump = null;       // lastGood = {lat, lon, acc, t}
+  let jumpRejected = null;                       // Sanity Gate 거부 기록 (상태 표시용)
   let usingSavedPos = null;                      // GPS 미확보 시 사용 중인 저장 위치
   let latch = null, latchSuppressed = false;     // 지하 진입 고정 상태
   let shownKeys = new Set(), lastInAt = new Map(), lastShown = [], lastRender = null;
@@ -231,7 +238,7 @@
   let coldAnchor = null, coldGoodStreak = 0;
   let snackTimer = null, snackName = null, snackMutedFor = null;
   let latchFilter = null;
-  let coldNameList = [], coldRecentList = [], coldSearchList = [], coldWpsList = [];
+  let coldNameList = [], coldRecentList = [], coldSearchList = [], coldWpsList = [], wpsRecentList = [];
   let voiceQuery = null;           // P5: 음성 확정 검색어 {text, alts} — refreshDisplay에서 1회 소비
   let voiceView = null;            // 음성 전용 화면(무매칭/후보) {text, html} — 입력값이 그대로인 동안 GPS 재렌더에도 유지
   let voiceCandList = [], voiceSuggestList = [];
@@ -278,13 +285,33 @@
     if (acc > ACC_COLLAPSE) maybeLatch();
     if (acc > ACC_REJECT) { updateStatus(); return; }   // 정확도 불량: 위치 갱신 거부
 
-    // 순간이동 거부: 비정상 속도면 보류, 연속 2회 같은 지점이면 확정
+    // Sanity Gate (2026-10-17): 앵커 대비 물리적 이동 가능 거리 검증 — 3km 점프 원천 차단
+    // 수동 선택(pick) 래치는 사용자 명시 선택이므로 게이트 제외
+    const skipGate = !!(latch && latch.kind === 'pick');
+    if (!skipGate) {
+      const stale = lastGood && now - lastGood.t > STALE_MS;
+      const undergroundOrLatched = !!(latch || stale);
+      const gate = isPlausibleFromAnchor(lat, lon, acc, now, undergroundOrLatched);
+      if (!gate.ok) {
+        jumpRejected = { lat, lon, acc, dist: gate.dist, allowedDist: gate.allowedDist, t: now };
+        updateStatus();
+        return;
+      }
+      jumpRejected = null;
+    }
+
+    // 순간이동 거부: 비정상 속도면 보류, 고신뢰 GPS 연속 3회 같은 지점이면 확정
+    // (Wi-Fi 오염 픽스는 카운트하지 않음 — 고정 오염 AP에 물려도 점프 확정 방지)
     // 보류 중에는 점프 직전 마지막 신뢰 위치 기준으로 해당 단지 전체 동을 표시
     if (lastGood) {
       const dt = Math.max((now - lastGood.t) / 1000, 1);
       if (distM(lastGood.lat, lastGood.lon, lat, lon) / dt > MAX_SPEED) {
         if (pendingJump && distM(pendingJump.lat, pendingJump.lon, lat, lon) <= Math.max(30, acc, pendingJump.acc)) {
-          if (++pendingJump.count < 2) { updateStatus(); return; }
+          if (isHighConfidenceGps(c)) {
+            if (++pendingJump.count < 2) { updateStatus(); return; }
+          } else {
+            updateStatus(); return;  // Wi-Fi 픽스: 보류 유지, 확정 카운트 제외
+          }
         } else {
           pendingJump = { lat, lon, acc, count: 0 };
           if (!latch || latch.kind !== 'jump') holdJumpComplex();
@@ -294,10 +321,10 @@
     }
     if (pendingJump && latch && latch.kind === 'jump') latch = null;  // 점프 확정/기각: 확장 해제
     pendingJump = null;
-    acceptPos(lat, lon, acc, now);
+    acceptPos(lat, lon, acc, now, c);
   }
 
-  function acceptPos(lat, lon, acc, t) {
+  function acceptPos(lat, lon, acc, t, c) {
     if (latch && (latch.kind === 'wps' || latch.kind === 'pick') && !coldDismissed) {
       if (acceptPosCold(lat, lon, acc, t)) return;  // true=콜드 모드 유지
       // false=지상 탈출 → 아래 일반 처리로 폴스루
@@ -308,6 +335,8 @@
     pushFixBuf(lat, lon, acc, t);
     saveGoodComplex(lat, lon, acc, t);
     try { localStorage.setItem('last_good_pos', JSON.stringify({ lat, lon, t })); } catch (e) {}
+    // 고신뢰 GPS만 별도 앵커로 저장 (오염 Wi-Fi와 분리 — Sanity Gate 기준점)
+    if (c && isHighConfidenceGps(c)) saveTrustedGps(lat, lon, acc, t);
     if (!isGpsReady) { clearTimeout(gpsTimeout); isGpsReady = true; }
     if (latch && acc <= ACC_LATCH_EXIT) latch = null;
     updateStatus();
@@ -315,12 +344,11 @@
   }
 
   // 콜드 복원 화면 유지 중 위치 수신: 화면은 고정, 탈출 조건 충족 시 false
+  // H1 수정 (2026-10-17): 스낵바 사용자 승인 전 lastGood/localStorage 덮어쓰기 금지 — 오염 좌표로 앵커 오염 방지
   function acceptPosCold(lat, lon, acc, t) {
     myLat = lat; myLon = lon; myAcc = acc;
-    lastGood = { lat, lon, acc, t };
     usingSavedPos = null;
     pushFixBuf(lat, lon, acc, t);
-    try { localStorage.setItem('last_good_pos', JSON.stringify({ lat, lon, t })); } catch (e) {}
     if (!isGpsReady) { clearTimeout(gpsTimeout); isGpsReady = true; }
     updateStatus();
     const cur = latch.names[0];
@@ -376,16 +404,17 @@
     if (!el) return;
     if (el.style.display === 'block' && el.dataset.name === name) return;  // 같은 단지 표시 중이면 타이머 유지 (매 fix마다 연장 방지)
     el.dataset.name = name;
-    el.innerHTML = `📍 현위치 ${esc(name)} 감지됨 — 화면을 변경할까요?<br><button class="snack-ok" onclick="coldSnackChange()">변경</button><button class="snack-no" onclick="hideColdSnack()">유지</button>`;
+    el.innerHTML = `📍 현위치 ${esc(name)} 감지됨 — 화면을 변경할까요?<br><button class="snack-ok" onclick="coldSnackChange()">변경</button><button class="snack-no" onclick="hideColdSnack(true)">유지</button>`;
     el.style.display = 'block';
     clearTimeout(snackTimer);
-    snackTimer = setTimeout(hideColdSnack, SNACK_MS);
+    snackTimer = setTimeout(() => hideColdSnack(false), SNACK_MS);
   }
-  function hideColdSnack() {
+  // M3 수정 (2026-10-17): 타임아웃 자동 닫힘은 음소거하지 않음 — 사용자가 '유지'를 명시 선택한 경우만 뮤트
+  function hideColdSnack(manual) {
     const el = document.getElementById('snack-bar');
     if (el) { el.style.display = 'none'; el.dataset.name = ''; }
     clearTimeout(snackTimer); snackTimer = null;
-    snackMutedFor = snackName;
+    if (manual) snackMutedFor = snackName;
   }
   function coldSnackChange() {
     hideColdSnack();
@@ -405,7 +434,9 @@
   // 1초 감시: 끊김 배너, 지하 고정 진입/만료, 이탈 지연 항목 정리
   function watchdog() {
     const now = Date.now();
-    if (latch && now - latch.since > LATCH_MAX_MS) releaseLatch(true);
+    // H3 수정 (2026-10-17): 수동 선택(pick) 래치는 시간 만료로 자동 해제하지 않음 — 사용자가 지하에서 직접 고른 화면 보호
+    // 단, GPS 신호가 복구되어 지상 탈출이 확인되면 acceptPosCold에서 해제됨
+    if (latch && now - latch.since > LATCH_MAX_MS && latch.kind !== 'pick') releaseLatch(true);
     else if (lastGood && now - lastGood.t > LATCH_IDLE_MS) maybeLatch();
     if (currentMode === 'main' && !latch && lastShown.some(r => !r.near)) refreshDisplay();
     updateStatus();
@@ -714,6 +745,7 @@
       else if (usingSavedPos) msgs.push(`이전 위치 기준 (${fmtAgo(now - usingSavedPos.t)})`);
       if (!gpsErr && !stale && lastAcc != null && lastAcc > ACC_WEAK) msgs.push(`신호 약함 (±${Math.round(lastAcc)}m)` + (lastAcc > ACC_REJECT ? ' · 위치 갱신 보류' : ''));
       if (pendingJump) msgs.push('위치 급변 감지 · 확인 중');
+      if (jumpRejected) msgs.push(`⚠️ 위치 튐 의심 차단 (${(jumpRejected.dist/1000).toFixed(1)}km)`);
     }
     const txt = msgs.join('\n');
     if (el.textContent !== txt) el.textContent = txt;
@@ -1330,7 +1362,9 @@
   // 검색 엔진 (메인 검색·콜드 검색 공용). rawQuery: 입력 원문. 반환: 매칭 행 배열 (순위순)
   // 반환: [{item, base, score}] (score순). base = 매칭 점수(가산 전), score = base + P4 위치 가산
   function searchItemsWithScores(rawQuery) {
-    const searchVal = String(rawQuery || '').toLowerCase().replace(/\s+/g, "");
+    // 중복 토큰 제거 (2026-10-17): "107동 107동" → "107동" — 중복 토큰이 검색 실패 유발
+    const dedupedQuery = String(rawQuery || '').split(/\s+/).filter((t, i, a) => t && a.indexOf(t) === i).join(' ');
+    const searchVal = dedupedQuery.toLowerCase().replace(/\s+/g, "");
     if (!searchVal) return [];
     // [1단계 필터] 검색어와 100% 완벽하게 일치하는 데이터 먼저 탐색
     let exactMatches = allData.filter(i => {
@@ -1346,8 +1380,8 @@
     } else {
       // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정 (앞 단계 결과가 있으면 뒤 단계는 계산 안 함)
       const tiers = [
-        () => allData.map(i => ({ item: i, base: tokenSubseqScore(rawQuery, i) })),
-        () => allData.map(i => ({ item: i, base: chosungScore(rawQuery, i) })),
+        () => allData.map(i => ({ item: i, base: tokenSubseqScore(dedupedQuery, i) })),
+        () => allData.map(i => ({ item: i, base: chosungScore(dedupedQuery, i) })),
         () => allData.map(i => ({ item: i, base: getMatchScore(searchVal, i) })),
       ];
       for (const t of tiers) {
@@ -1474,7 +1508,7 @@
     if (navigator.geolocation) {
       try {
         navigator.geolocation.getCurrentPosition(onColdWpsOk, onColdWpsErr,
-          { enableHighAccuracy: true, timeout: WPS_TIMEOUT_MS, maximumAge: 3000 });
+          { enableHighAccuracy: false, timeout: 2500, maximumAge: 3000 });
         return;
       } catch (e) {}
     }
@@ -1487,12 +1521,25 @@
     const lat = c.latitude, lon = c.longitude;
     const acc = Number.isFinite(c.accuracy) ? c.accuracy : 99999;
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) { onColdWpsErr(); return; }
+    // IME 보호: 검색창에 포커스가 있으면 WPS 응답 후 포커스 복원
+    const searchFocused = document.activeElement && document.activeElement.id === 'cold-search';
     coldView = coldView || { type: 'hybrid' };
     coldView.wpsPending = false;
     const ranked = wpsCandidates(lat, lon, acc);
     coldView.wpsLat = lat; coldView.wpsLon = lon; coldView.wpsAcc = acc;
-    const dec = decideWpsAction(ranked, acc);
-    if (dec.action === 'auto' && doWpsAutoSelect(dec.name, lat, lon, acc)) return;
+    let dec = decideWpsAction(ranked, acc);
+    // Sanity Gate (2026-10-17): WPS 위치가 앵커 대비 비정상 점프면 자동 선택 금지 → 수동 선택으로 강등
+    if (dec.action === 'auto') {
+      const gate = isPlausibleFromAnchor(lat, lon, acc, Date.now(), true);
+      if (!gate.ok) {
+        dec = { action: 'pick' };
+        coldView.wpsJumpSuspect = true;
+      }
+    }
+    if (dec.action === 'auto' && doWpsAutoSelect(dec.name, lat, lon, acc)) {
+      if (searchFocused) { const si = document.getElementById('cold-search'); if (si) si.focus(); }
+      return;
+    }
     if (dec.action === 'auto' || dec.action === 'pick') {
       coldView.type = 'wps-pick';
       coldView.wpsCands = coldWpsList = ranked.slice(0, WPS_CANDIDATE_N);
@@ -1501,13 +1548,16 @@
       coldView.wpsCands = coldWpsList = [];
     }
     refreshDisplay();
+    if (searchFocused) { const si = document.getElementById('cold-search'); if (si) si.focus(); }
   }
   function onColdWpsErr() {
     if (latch || (Number.isFinite(myLat) && Number.isFinite(myLon))) return;
+    const searchFocused = document.activeElement && document.activeElement.id === 'cold-search';
     coldView = coldView || { type: 'hybrid' };
     coldView.wpsPending = false;
     coldView.type = 'hybrid';
     refreshDisplay();
+    if (searchFocused) { const si = document.getElementById('cold-search'); if (si) si.focus(); }
   }
   // WPS 1위 단지 자동 선택: 측위 성공 시 가까운 동만 거리순 표시 (거리는 WPS 위치 기준). 성공 시 true
   function doWpsAutoSelect(name, lat, lon, acc) {
@@ -1618,6 +1668,11 @@
     if (!na) return null;
     const pr = parseRoadAddr(addr);
     const roadName = pr ? pr.road : '', roadNum = pr ? pr.num : '';
+    // 읍면동 추출 (관대한 매칭용) — "북구 흥해읍 이인로 90" → "흥해읍" (\b는 한글에 미동작하므로 사용 금지)
+    const emdM = String(addr||'').match(/([가-힣]+(?:읍|면|동))/);
+    const emd = emdM ? emdM[1].replace(/\s+/g,'') : '';
+    // 도로명 어간 (로/길 제거) — 지번/도로명 혼용 대응 ("이인로" → "이인", DB "이인리"와 매칭)
+    const roadStem = roadName.replace(/(로|길)$/, '');
     const scored = new Map();
     const nameHit = (name, sc) => { if (name) scored.set(name, Math.max(scored.get(name)||0, sc)); };
     (allData||[]).forEach(it => {
@@ -1625,9 +1680,13 @@
       const nn = norm(nm);
       if (nn.length >= 2 && na.includes(nn)) nameHit(nm, 50 + nn.length);
       const da = norm(it.addr);
-      if (da && roadName && da.includes(roadName)) {
+      if (!da) return;
+      if (roadName && da.includes(roadName)) {
         if (roadNum && da.includes(roadName + roadNum)) nameHit(nm, 100);
+        else if (emd && da.includes(emd)) nameHit(nm, 60);  // 읍면동+도로명 (번호 형식 불일치 대응)
         else nameHit(nm, 40);
+      } else if (roadStem && roadStem.length >= 2 && emd && da.includes(emd) && da.includes(roadStem)) {
+        nameHit(nm, 55);  // 지번/도로명 혼용: 읍면동 + 도로명 어간
       }
     });
     if (!scored.size) return null;
@@ -1729,6 +1788,7 @@
   function expandDestPriority() { destExpanded = true; refreshDisplay(); }
   function collapseDestPriority() { destExpanded = false; refreshDisplay(); }
   function pickRecent(i) { const r = coldRecentList[i]; if (r) showComplexRows(r.name); }
+  function wpsSwitchRecent(i) { const r = wpsRecentList[i]; if (r) showComplexRows(r.name); }  // WPS 화면 1-Tap 전환 (2026-10-17)
   function pickWps(i) { const c = coldWpsList[i]; if (c) showComplexRows(c.name); }
   function pickSearch(i) { const n = coldSearchList[i]; if (n) showComplexRows(n); }
   function pickComplexByIdx(i) { const n = coldNameList[i]; if (n) showComplexRows(n); }
@@ -1747,10 +1807,25 @@
     const prevQ = (document.getElementById('cold-search') || {}).value || '';  // 재렌더 시 입력 중인 검색어 유지
     let html = '';
     html += `<div class="cold-status">${v.wpsPending ? '📡 위치 확인 중...' : '📡 GPS 신호 없음 — 아래에서 단지를 선택하세요'}</div>`;
+    // 대응 1 (2026-10-17): 1순위 — 직전 지상 위치 근처 단지 원터치 칩 (10분 이내 신뢰 GPS 기준)
+    const anchor = loadTrustedGps();
+    if (anchor && Date.now() - anchor.t < SANITY_TTL_MS) {
+      let bestName = null, bestD = 999999;
+      complexNames().forEach(n => {
+        const d = dKAvg(n, anchor.lat, anchor.lon).avg;
+        if (d < bestD) { bestD = d; bestName = n; }
+      });
+      if (bestName && bestD <= 500) {
+        html += `<div class="cold-sec">📍 직전 위치 근처</div><div class="chip-row">` +
+          `<button class="chip chip-anchor" onclick="showComplexRows('${esc(bestName).replace(/'/g, "\\'")}')">📍 ${esc(bestName)} <small>약 ${Math.round(bestD)}m</small></button></div>`;
+      }
+    }
     coldWpsList = (v.wpsCands || []).slice();
     if (coldWpsList.length) {
       html += `<div class="cold-sec">📶 WiFi 위치 후보</div>`;
-      if (Number.isFinite(v.wpsAcc) && v.wpsAcc > WIFI_AUTO_MAX_ACC_M) html += `<div class="cold-status">위치 정확도가 낮아 직접 선택해 주세요</div>`;
+      // Sanity Gate에서 점프 의심으로 강등된 경우 경고 배지
+      if (v.wpsJumpSuspect) html += `<div class="cold-status" style="color:#c60;">⚠️ Wi-Fi 위치 튐 의심 — 직접 확인 후 선택하세요</div>`;
+      else if (Number.isFinite(v.wpsAcc) && v.wpsAcc > WIFI_AUTO_MAX_ACC_M) html += `<div class="cold-status">위치 정확도가 낮아 직접 선택해 주세요</div>`;
       html += `<div class="chip-row">` +
         coldWpsList.map((c, i) => `<button class="chip" onclick="pickWps(${i})">${esc(c.name)} <small>약 ${Math.round(c.d)}m</small></button>`).join('') + `</div>`;
     }
@@ -1778,6 +1853,12 @@
     let badge;
     if (latch.kind === 'wps') {
       badge = `<div class="latch-badge">📡 위치 기준 (정확도 약 ${latch.wpsAcc}m) <span class="cold-x" onclick="closeColdRestore(event)">✕</span></div>`;
+      // 대응 2 (2026-10-17): WPS 오선택 시 1-Tap 전환 바 — 최근 3개 단지 칩
+      wpsRecentList = getRecents().slice(0, 3).filter(r => r.name !== (latch.names[0] || ''));
+      if (wpsRecentList.length) {
+        badge += `<div class="chip-row" style="margin:6px 0;"><span style="font-size:12px;color:#666;">다른 단지:</span>` +
+          wpsRecentList.map((r, i) => `<button class="chip" onclick="wpsSwitchRecent(${i})">${esc(r.name)}</button>`).join('') + `</div>`;
+      }
     } else if (latch.kind === 'pick') {
       badge = `<div class="latch-badge" onclick="closePickView()">📍 ${esc(latch.names[0] || '')} 전체 동 (터치 시 해제)</div>`;
     } else if (dual) {
@@ -1921,6 +2002,43 @@
     const dx = (lon2 - lon1) * 111000 * Math.cos(lat1 * Math.PI / 180);
     const dy = (lat2 - lat1) * 111000;
     return Math.hypot(dx, dy);
+  }
+
+  // ===== Sanity Gate 헬퍼 (2026-10-17) =====
+  // 고신뢰 GPS 판별: BSSID를 브라우저에서 읽을 수 없으므로 휴리스틱 사용
+  // - accuracy ≤ 18m: GPS 확정급
+  // - accuracy ≤ 30m + 움직임(speed/altitude) 있음: GPS 유력
+  // - 그 외 (Wi-Fi 20~60m 단독 등): 저신뢰 → 점프 확정 카운트에서 제외
+  function isHighConfidenceGps(c) {
+    if (!c || !Number.isFinite(c.accuracy)) return false;
+    if (c.accuracy <= 18) return true;
+    const hasKinematics = (Number.isFinite(c.speed) && c.speed > 0.5) || Number.isFinite(c.altitude);
+    return c.accuracy <= 30 && hasKinematics;
+  }
+  function loadTrustedGps() {
+    try {
+      const s = JSON.parse(localStorage.getItem(TRUSTED_GPS_KEY) || 'null');
+      if (s && Number.isFinite(s.lat) && Number.isFinite(s.lon) && Number.isFinite(s.t)) return s;
+    } catch (e) {}
+    return null;
+  }
+  function saveTrustedGps(lat, lon, acc, t) {
+    try { localStorage.setItem(TRUSTED_GPS_KEY, JSON.stringify({ lat, lon, acc, t })); } catch (e) {}
+  }
+  // 앵커(마지막 신뢰 위치) 대비 물리적 이동 가능 거리 검증
+  // isUndergroundOrLatched: 래치 활성 or GPS 에러(지하 유력) 시 true → 250m 상한 캡
+  // 반환: { ok, reason, dist, allowedDist }
+  function isPlausibleFromAnchor(lat, lon, acc, now, isUndergroundOrLatched) {
+    const anchor = lastGood || loadTrustedGps();
+    if (!anchor || !Number.isFinite(anchor.lat)) return { ok: true, reason: 'no-anchor' };
+    const dtSec = Math.max((now - anchor.t) / 1000, 1);
+    if (dtSec * 1000 > SANITY_TTL_MS) return { ok: true, reason: 'expired' };
+    const d = distM(anchor.lat, anchor.lon, lat, lon);
+    const allowedDist = isUndergroundOrLatched
+      ? Math.min(UNDERGROUND_RADIUS_CAP_M, 80 + dtSec * WALK_SPEED_MPS)
+      : (100 + dtSec * MAX_SPEED);
+    if (d > allowedDist + acc) return { ok: false, reason: 'jump-exceeded', dist: Math.round(d), allowedDist: Math.round(allowedDist) };
+    return { ok: true, dist: Math.round(d) };
   }
 
   function getDist(latStr, lonStr, refLat = myLat, refLon = myLon) {

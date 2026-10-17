@@ -151,7 +151,8 @@
       <input type="text" id="in-name" placeholder="아파트명" autocomplete="off">
       <input type="text" id="in-dong" placeholder="동/라인 (예: 101동 또는 공통)" autocomplete="off">
       <input type="text" id="in-pw" placeholder="비밀번호" autocomplete="off">
-      <input type="text" id="in-addr" placeholder="주소" autocomplete="off">
+      <div id="addr-container"></div>
+      <button onclick="addAddrRow()" style="width:100%; padding:10px; background:#222; color:#aaa; border:1px dashed #555; border-radius:8px; margin-top:5px;">+ 주소 추가</button>
       <div id="gps-container"></div>
       <button onclick="getGPS()" style="width:100%; padding:15px; background:#333; color:var(--accent); border:2px solid var(--accent); border-radius:12px; font-weight:bold; margin-top:20px;">📍 현위치 좌표 가져오기</button>
       <div id="gps-acc-msg"></div>
@@ -2331,7 +2332,7 @@
   async function saveData() {
     const c = collectCoords();
     if (c.err) { showMsg(c.err); return; }
-    const d = { id: document.getElementById('edit-row').value, name: document.getElementById('in-name').value, dong: document.getElementById('in-dong').value, pw: document.getElementById('in-pw').value, addr: document.getElementById('in-addr').value, lat: c.lat, lon: c.lon, note: document.getElementById('in-note').value };
+    const d = { id: document.getElementById('edit-row').value, name: document.getElementById('in-name').value, dong: document.getElementById('in-dong').value, pw: document.getElementById('in-pw').value, addr: collectAddrs(), lat: c.lat, lon: c.lon, note: document.getElementById('in-note').value };
     if ((!d.lat || !d.lon) && d.addr) {
       const g = await geocodeAddr(d.addr);
       if (g) { d.lat = g.lat; d.lon = g.lon; }
@@ -2344,6 +2345,16 @@
     hideInputModal(); loadData(); showMsg('성공적으로 저장되었습니다!');
   }
   
+  function addAddrRow(val = "") {
+    const container = document.getElementById('addr-container');
+    const div = document.createElement('div'); div.className = 'addr-row'; div.style.cssText = 'display:flex;gap:5px;margin-bottom:5px;';
+    div.innerHTML = `<input type="text" class="addr-val" placeholder="주소" autocomplete="off" value="${esc(val)}" style="flex:1;"><button type="button" class="row-btn" style="color:var(--error);" onclick="this.parentElement.remove()">-</button>`;
+    container.appendChild(div);
+  }
+  function collectAddrs() {
+    const vals = [...document.querySelectorAll('.addr-val')].map(el => el.value.trim()).filter(v => v);
+    return vals.join(' / ');
+  }
   function addGpsRow(lat = "", lon = "") {
     const container = document.getElementById('gps-container');
     const isFirst = container.children.length === 0;
@@ -2369,11 +2380,14 @@
       showMsg(msg);
     }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   }
-  function showAddModal() { ['edit-row','in-name','in-dong','in-pw','in-addr','in-note'].forEach(id => document.getElementById(id).value = ""); document.getElementById('gps-container').innerHTML = ""; setAccMsg(""); addGpsRow(); document.getElementById('input-modal').style.display = 'block'; }
+  function showAddModal() { ['edit-row','in-name','in-dong','in-pw','in-note'].forEach(id => document.getElementById(id).value = ""); document.getElementById('addr-container').innerHTML = ""; addAddrRow(); document.getElementById('gps-container').innerHTML = ""; setAccMsg(""); addGpsRow(); document.getElementById('input-modal').style.display = 'block'; }
   function showEditModal(i) {
     setAccMsg("");
     document.getElementById('edit-row').value = i.id || ''; document.getElementById('in-name').value = i.name; document.getElementById('in-dong').value = i.dong; document.getElementById('in-pw').value = i.pw;
-    document.getElementById('in-addr').value = i.addr; document.getElementById('in-note').value = i.note;
+    document.getElementById('in-note').value = i.note;
+    const addrContainer = document.getElementById('addr-container'); addrContainer.innerHTML = "";
+    const addrs = String(i.addr || '').split(' / ').map(s => s.trim()).filter(s => s);
+    if (addrs.length === 0) addAddrRow(); else addrs.forEach(a => addAddrRow(a));
     const container = document.getElementById('gps-container'); container.innerHTML = "";
     const lats = String(i.lat).split('|'), lons = String(i.lon).split('|');
     lats.forEach((lt, idx) => addGpsRow(lt, lons[idx] || ""));

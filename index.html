@@ -261,10 +261,13 @@
 
     startWatch();
     setInterval(watchdog, 1000);
+    // 배달 목적지 주기 갱신 (D-1: 새 배달·만료 반영)
+    setInterval(maybeFetchDestination, 60000);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         startWatch();
         if (wakeWanted) requestWakeLock();
+        maybeFetchDestination();
       }
     });
 
@@ -1660,7 +1663,7 @@
   }
   // ===== 배달 목적지 자동 표시 (페어링 사용자 전용) =====
   const DEST_FRESH_MS = 90 * 60 * 1000;
-  let destFetchDone = false, destDismissed = false, destInfo = null, pairExpanded = false, destExpanded = false, destRawAddr = '';
+  let destFetchDone = false, destFetching = false, destDismissed = false, destInfo = null, pairExpanded = false, destExpanded = false, destRawAddr = '';
   function getPairCode() {
     const c = String(localStorage.getItem('rider_pair_code') || '').trim().toUpperCase();
     return /^[A-Z0-9]{6}$/.test(c) ? c : null;
@@ -1687,19 +1690,33 @@
     renderDestBanner(); renderPairRow(); refreshDisplay();
   }
   async function maybeFetchDestination() {
-    if (destFetchDone) return;
+    if (destFetching) return;
     const code = getPairCode(); if (!code) return;
-    destFetchDone = true;
+    destFetching = true;
     try {
       const res = await fetch(SUPABASE_URL + '/functions/v1/rider-dest?code=' + encodeURIComponent(code), { headers: { 'apikey': SUPABASE_ANON_KEY } });
       if (!res.ok) return;
       const j = await res.json();
       const addr = String((j && j.address) || '').trim();
       const t = Date.parse(j && j.created_at);
-      if (!addr || !Number.isFinite(t) || (Date.now() - t) > DEST_FRESH_MS) return;
+      if (!addr || !Number.isFinite(t) || (Date.now() - t) > DEST_FRESH_MS) {
+        // 만료된 목적지 → 기존 배너 폐기, GPS 모드로 복귀
+        if (destInfo) {
+          destInfo = null; destDismissed = false; destExpanded = false; destRawAddr = '';
+          renderDestBanner(); refreshDisplay();
+        }
+        return;
+      }
+      // 같은 주소면 재매칭 불필요 — 60초 폴링마다 rematchDestination()의 중복 매칭·외부 지오코딩 요청 방지
+      if (addr === destRawAddr) return;
+      // 새 주소 도착 → 이전 배너 닫힘 상태 초기화 (D-5)
+      if (addr !== destRawAddr) { destDismissed = false; destExpanded = false; }
       destRawAddr = addr;  // 새 데이터 도착 시 재매칭용으로 보관
       rematchDestination();
-    } catch (e) {}
+    } catch (e) {
+    } finally {
+      destFetching = false;
+    }
   }
   // 저장된 배달 주소를 현재 allData로 다시 매칭 (데이터 갱신 시 nomatch 구제용)
   async function rematchDestination() {
@@ -1709,8 +1726,7 @@
     const hosu = extractHosu(destRawAddr);
     const wasMatch = destInfo && destInfo.type === 'match';
     if (m) {
-      // 매칭 성공 → 자동 학습 (DB에 주소 없으면 저장)
-      autoLearnAddress(m.name, destRawAddr);
+      // 매칭 성공 → 자동 학습은 의도적으로 중단 (D-3 리뷰: 오매칭 주소가 공용 apt_passwords 테이블에 기록되던 문제)
       destInfo = { type:'match', name:m.name, dong: dong, hosu: hosu, address: destRawAddr };
     } else {
       // 이름/주소 매칭 실패 → 좌표 기반 매칭 시도
@@ -1731,31 +1747,8 @@
   }
   // ===== 배달 주소 자동 학습 (1번): 이름 매칭 성공 시 주소를 DB에 자동 저장 =====
   async function autoLearnAddress(matchedName, deliveryAddr) {
-    if (!matchedName || !deliveryAddr) return;
-    const item = (allData||[]).find(it => String(it.name||'').trim() === String(matchedName).trim());
-    if (!item) return;
-    const pr = parseRoadAddr(deliveryAddr);
-    if (!pr || !pr.road || !pr.num) return;
-    const newAddrPart = deliveryAddr.trim();
-    const existing = String(item.addr || '');
-    // 이미 주소가 있으면 스킵
-    if (existing && existing.includes(pr.road.replace(/\s+/g,''))) return;
-    const updated = existing ? existing + ' / ' + newAddrPart : newAddrPart;
-    try {
-      const SUPABASE_URL = 'https://saokvvmfdgybocpfamhl.supabase.co';
-      const ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhb2t2dm1mZGd5Ym9jcGZhbWhsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0NDQ2NjAsImV4cCI6MjEwNzAyMDY2MH0.VDBrvAVaPBA89Iq56EGnaPV92iA96_UaJLphB5jLcCk';
-      await fetch(`${SUPABASE_URL}/rest/v1/apt_passwords?apt_name=eq.${encodeURIComponent(matchedName)}`, {
-        method: 'PATCH',
-        headers: {
-          'apikey': ANON_KEY,
-          'Authorization': 'Bearer ' + ANON_KEY,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify({ address: updated })
-      });
-      item.addr = updated;
-    } catch (e) { /* 자동 학습 실패는 무시 */ }
+    // D-3: 공용 DB 오염 방지 -- 자동 학습 중단 (no-op)
+    return;
   }
 
   // ===== 좌표 기반 매칭 (2번): 주소만 있고 이름 매칭 안 될 때 가장 가까운 단지 찾기 =====
@@ -1795,6 +1788,17 @@
     return findNearestByCoords(coords.lat, coords.lng, 100);
   }
 
+  // 번지 뒤에 숫자가 이어지면 다른 번지 (신흥로87이 신흥로870에 오매칭되는 문제 방지)
+  function roadNumBoundaryMatch(haystack, needle) {
+    if (!needle) return false;
+    let i = haystack.indexOf(needle);
+    while (i !== -1) {
+      const next = haystack.charAt(i + needle.length);
+      if (!(next >= '0' && next <= '9')) return true;
+      i = haystack.indexOf(needle, i + 1);
+    }
+    return false;
+  }
   function matchAddressToComplex(addr) {
     const norm = s => String(s||'').replace(/\s+/g,'').replace(/경상북도/g,'경북');
     const na = norm(addr);
@@ -1815,7 +1819,7 @@
       const da = norm(it.addr);
       if (!da) return;
       if (roadName && da.includes(roadName)) {
-        if (roadNum && da.includes(roadName + roadNum)) nameHit(nm, 100);
+        if (roadNum && roadNumBoundaryMatch(da, roadName + roadNum)) nameHit(nm, 100);
         else if (emd && da.includes(emd)) nameHit(nm, 40);  // 읍면동+도로명만으로는 매칭 안 됨 (다른 건물 오탐 방지)
         else nameHit(nm, 30);
       } else if (roadStem && roadStem.length >= 2 && emd && da.includes(emd) && da.includes(roadStem)) {

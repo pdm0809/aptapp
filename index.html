@@ -1089,8 +1089,6 @@
   // 호수/동/숫자 불일치(-5) 및 일반 단어 불일치(-6) 시 탈락시키지 않고 감점 적용
   function tokenSubseqScore(rawQuery, item) {
     const tokens = String(rawQuery).toLowerCase().split(/\s+/).filter(t => t.length > 0);
-    if (tokens.length < 2) return 0;
-    const nameTarget = String(item.name || '').toLowerCase();
     // 차수 충돌 게이트: 차수(2차/4차)는 단지명의 일부이자 실제로 다른 단지(주소 다름).
     // 검색어에 차수가 있으면 후보 단지명도 같은 차수여야 함 (없거나 다르면 탈락).
     // ※ 스케치(qCha && nCha && ...)에서 강화: 차수 없는 후보도 제외해야
@@ -1100,6 +1098,10 @@
     const qCha = (String(rawQuery).match(/([0-9]+)\s*차/) || [])[1];
     const nCha = (String(item.name || '').match(/([0-9]+)\s*차/) || [])[1];
     if (qCha && qCha !== nCha) return 0;
+    // [2-단일] 띄어쓰기 없는 단일 토큰: 단지명 단어 순서 매칭으로 처리
+    if (tokens.length === 1) return singleTokenSubseqScore(tokens[0], item);
+    if (tokens.length < 2) return 0;
+    const nameTarget = String(item.name || '').toLowerCase();
     const qNoSpace = String(rawQuery).toLowerCase().replace(/\s+/g, '');
     const nNoSpace = nameTarget.replace(/\s+/g, '');
     const nTokens = nameTarget.split(/\s+/).filter(t => t.length >= 3 && !/^\d+차$/.test(t));
@@ -1120,6 +1122,33 @@
     }
     if (meaningful === 0) return 0;
     return Math.max(0, 40 + matched * 5 - penalty);
+  }
+
+  // [2-단일] 단일 토큰(띄어쓰기 없음) 순서 매칭: 단지명 단어(공백 분리, 2글자 이상)가
+  // 쿼리 안에 순서대로 전부 등장하면 매칭.
+  // 예: "포항펜타시티대방엘리움퍼스티지1차아파트" → "펜타시티 대방엘리움 1차"
+  // (접두 "포항"·삽입 "퍼스티지"·접미 "아파트" 허용)
+  // 숫자를 포함한 단어("1차"·"2단지" 등)는 숫자 경계에서만 인정:
+  // 앞뒤에 숫자가 바로 이어지면 다른 번호로 보고 해당 위치는 스킵 ("2단지"가 "12단지"에 매칭 금지)
+  // 차수 게이트(qCha/nCha)는 호출자(tokenSubseqScore)에서 공통 적용하므로 여기선 검사 안 함.
+  function singleTokenSubseqScore(qToken, item) {
+    const words = String(item.name || '').toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+    if (!words.length) return 0;
+    let pos = 0;
+    for (const w of words) {
+      const hasDigit = /\d/.test(w);
+      const isD = ch => ch >= '0' && ch <= '9';
+      let idx = -1, from = pos;
+      for (;;) {
+        const c = qToken.indexOf(w, from);
+        if (c < 0) break;
+        if (!hasDigit || (!isD(qToken.charAt(c - 1)) && !isD(qToken.charAt(c + w.length)))) { idx = c; break; }
+        from = c + 1;
+      }
+      if (idx < 0) return 0;
+      pos = idx + w.length;
+    }
+    return 40 + words.length * 5;
   }
 
   // [3단계] 초성 매칭: "ㅍㅌㅅㅌ" → "펜타시티"
@@ -1154,10 +1183,20 @@
       if (!nameStr.includes(qDesig[1])) return 0;        // 이름에 숫자 자체가 없으면 제외 (동/주소의 숫자는 안 됨)
     } else {
       // 숫자가 틀리면 무조건 탈락 (오타 검사 제외)
+      // 숫자 경계 검사: 앞뒤에 숫자가 이어지면 다른 번호 ("신흥로87"이 "신흥로870"에 매칭 금지)
       const queryNums = query.match(/\d+/g);
       if (queryNums) {
+        const isD = ch => ch >= '0' && ch <= '9';
+        const numHit = (hay, needle) => {
+          let i = hay.indexOf(needle);
+          while (i !== -1) {
+            if (!isD(hay.charAt(i - 1)) && !isD(hay.charAt(i + needle.length))) return true;
+            i = hay.indexOf(needle, i + 1);
+          }
+          return false;
+        };
         for (let i = 0; i < queryNums.length; i++) {
-          if (!targetStr.includes(queryNums[i])) return 0;
+          if (!numHit(targetStr, queryNums[i])) return 0;
         }
       }
     }
@@ -1412,17 +1451,51 @@
   });
   if (window.matchMedia('(display-mode: standalone)').matches) { document.getElementById('install-btn').style.display = 'none'; }
 
+  // 동/호수 분리: 쿼리에서 동/호수 부분을 추출·제거해 단지명 매칭에 숫자가 영향을 주지 않게 함.
+  // "포항펜타시티대방엘리움퍼스티지1차아파트101동1001호" → {query:"포항펜타시티대방엘리움퍼스티지1차아파트", dong:"101동", hosu:"1001"}
+  // "대방엘리움 1차 101동 1001호" → {query:"대방엘리움 1차", dong:"101동", hosu:"1001"}
+  // 정규식은 extractDong/extractHosu와 동일한 패턴 사용.
+  function stripDongHosu(q) {
+    let s = String(q || ''), dong = null, hosu = null, m;
+    m = s.match(/\d{1,4}\s*동/);
+    if (!m) m = s.match(/\d{2,4}\s*[-/]\s*\d{3,4}(?:\s*호)?/);
+    if (m) { dong = extractDong(m[0]); s = s.slice(0, m.index) + ' ' + s.slice(m.index + m[0].length); }
+    m = s.match(/(?:\d{1,4}\s*동\s*)?\d{3,4}\s*호/);
+    if (!m) m = s.match(/\d{2,4}\s*[-/]\s*\d{3,4}/);
+    if (m) { hosu = extractHosu(m[0]); s = s.slice(0, m.index) + ' ' + s.slice(m.index + m[0].length); }
+    s = s.replace(/\s+/g, ' ').trim();
+    return { query: s, dong, hosu };
+  }
+
   // 검색 엔진 (메인 검색·콜드 검색 공용). rawQuery: 입력 원문. 반환: 매칭 행 배열 (순위순)
   // 반환: [{item, base, score}] (score순). base = 매칭 점수(가산 전), score = base + P4 위치 가산
   function searchItemsWithScores(rawQuery) {
     // 중복 토큰 제거 (2026-10-17): "107동 107동" → "107동" — 중복 토큰이 검색 실패 유발
     const dedupedQuery = String(rawQuery || '').split(/\s+/).filter((t, i, a) => t && a.indexOf(t) === i).join(' ');
-    const searchVal = dedupedQuery.toLowerCase().replace(/\s+/g, "");
+    // 동/호수는 단지 매칭 전에 분리 (동/호수 숫자가 단지 매칭·tier4 숫자 검증에 영향 주지 않게)
+    // 동 핀 고정은 refreshDisplay의 matchSearchDongItems(rawVal)가 원본 쿼리로 그대로 수행
+    const dh = stripDongHosu(dedupedQuery);
+    // 동/호수만 입력된 경우("101동")는 분리 결과가 비므로 원본 쿼리로 폴백 (기존 exact 동작 유지)
+    const matchQuery = dh.query || dedupedQuery;
+    const searchVal = matchQuery.toLowerCase().replace(/\s+/g, "");
     if (!searchVal) return [];
     // [1단계 필터] 검색어와 100% 완벽하게 일치하는 데이터 먼저 탐색
+    // 숫자 경계: 쿼리가 숫자로 시작하면 앞, 숫자로 끝나면 뒤에 숫자가 이어지는 매칭은 제외
+    // ("신흥로87"이 "신흥로870"에, "2단지"가 "12단지"에 매칭 금지. "포레나"→"포레나101동" 같은 일반 prefix 매칭은 유지)
+    const exactStartsDigit = /^\d/.test(searchVal), exactEndsDigit = /\d$/.test(searchVal);
+    const isD = ch => ch >= '0' && ch <= '9';
     let exactMatches = allData.filter(i => {
       const targetStr = (i.name + i.dong + i.addr).toLowerCase().replace(/\s+/g, "");
-      return targetStr.includes(searchVal);
+      if (!targetStr.includes(searchVal)) return false;
+      if (!exactStartsDigit && !exactEndsDigit) return true;
+      let idx = targetStr.indexOf(searchVal), ok = false;
+      while (idx !== -1) {
+        const prevOk = !exactStartsDigit || !isD(targetStr.charAt(idx - 1));
+        const nextOk = !exactEndsDigit || !isD(targetStr.charAt(idx + searchVal.length));
+        if (prevOk && nextOk) { ok = true; break; }
+        idx = targetStr.indexOf(searchVal, idx + 1);
+      }
+      return ok;
     });
 
     let scoredItems = [];
@@ -1433,8 +1506,8 @@
     } else {
       // [2단계] 토큰 순서 매칭("펜타 한신 2차"→"펜타시티 한신더휴 2차") → [3단계] 초성 → [4단계] 오타 보정 (앞 단계 결과가 있으면 뒤 단계는 계산 안 함)
       const tiers = [
-        () => allData.map(i => ({ item: i, base: tokenSubseqScore(dedupedQuery, i) })),
-        () => allData.map(i => ({ item: i, base: chosungScore(dedupedQuery, i) })),
+        () => allData.map(i => ({ item: i, base: tokenSubseqScore(matchQuery, i) })),
+        () => allData.map(i => ({ item: i, base: chosungScore(matchQuery, i) })),
         () => allData.map(i => ({ item: i, base: getMatchScore(searchVal, i) })),
       ];
       for (const t of tiers) {

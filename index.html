@@ -1872,6 +1872,21 @@
     }
     return false;
   }
+  // 배달 주소에서 차수/단지 지정 추출 (동점 타이브레이크용, 2026-10-19).
+  // ① 괄호 안 장소명 "(...)"을 우선 탐색하고, ② 없으면 도로명+번지 구간을 제외한 나머지에서 탐색한다.
+  // ("2단지로 15" 같은 도로명을 지정으로 오인하지 않기 위함)
+  // 반환: [숫자, "차"|"단지"] 또는 null
+  function extractDesignation(addr, pr) {
+    const s = String(addr || '');
+    const pm = s.match(/\(([^)]*)\)/);
+    let hay = pm ? pm[1] : s;
+    if (!pm && pr && pr.road) {
+      const roadSeg = pr.road + (pr.num ? '\\s*' + String(pr.num).replace(/-/g, '\\-') : '');
+      try { hay = hay.replace(new RegExp(roadSeg), ' '); } catch (e) { /* ignore */ }
+    }
+    const dm = hay.match(/(\d+)\s*(차|단지)/);
+    return dm ? [dm[1], dm[2]] : null;
+  }
   function matchAddressToComplex(addr) {
     const norm = s => String(s||'').replace(/\s+/g,'').replace(/경상북도/g,'경북');
     const na = norm(addr);
@@ -1902,7 +1917,20 @@
     if (!scored.size) return null;
     const sorted = [...scored.entries()].sort((a,b) => b[1]-a[1]);
     if (sorted[0][1] < 50) return null;
-    if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) return null;
+    if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) {
+      // 동점 타이브레이크 (2026-10-19): 배달 주소의 차수/단지 지정으로 후보를 좁힌다.
+      // 지정이 없거나 타이브레이크 후에도 2명 이상이면 기존대로 null (모호성 가드 유지).
+      const tied = sorted.filter(e => e[1] === sorted[0][1]).map(e => e[0]);
+      const desig = extractDesignation(addr, pr);
+      if (desig) {
+        const winners = tied.filter(nm => {
+          const m = String(nm).match(/(\d+)\s*(차|단지)/);
+          return m && m[1] === desig[0] && m[2] === desig[1];
+        });
+        if (winners.length === 1) return { name: winners[0] };
+      }
+      return null;
+    }
     return { name: sorted[0][0] };
   }
   function extractDong(addr) {

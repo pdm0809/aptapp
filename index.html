@@ -1866,9 +1866,25 @@
     if (!needle) return false;
     let i = haystack.indexOf(needle);
     while (i !== -1) {
-      const next = haystack.charAt(i + needle.length);
-      if (!(next >= '0' && next <= '9')) return true;
-      i = haystack.indexOf(needle, i + 1);
+      const rest = haystack.slice(i + needle.length);
+      if (/^\d/.test(rest)) { i = haystack.indexOf(needle, i + 1); continue; }
+      if (/^-\d/.test(rest)) { i = haystack.indexOf(needle, i + 1); continue; }
+      if (rest.startsWith('번길')) { i = haystack.indexOf(needle, i + 1); continue; }
+      return true;
+    }
+    return false;
+  }
+  function jibunHit(da, ri, num) {
+    if (!ri || !num) return false;
+    const needle = ri + num;
+    let i = da.indexOf(needle);
+    while (i !== -1) {
+      const rest = da.slice(i + needle.length);
+      // 뒤 경계만 검사 (숫자/-숫자 이어지면 다른 번지). 앞 경계는 검사하지 않음:
+      // "북구마산리"처럼 행정구역(구)이 앞에 오는 게 정상이라, 앞 글자 검사가 정상 매칭을 막음.
+      // 리 이름 접미사 충돌("내리" vs "안내리")은 극히 드물어 시뮬레이션 오답 버킷으로 감시.
+      if (!/^\d/.test(rest) && !/^-\d/.test(rest)) return true;
+      i = da.indexOf(needle, i + 1);
     }
     return false;
   }
@@ -1898,12 +1914,38 @@
     const emd = emdM ? emdM[1].replace(/\s+/g,'') : '';
     // 도로명 어간 (로/길 제거) — 지번/도로명 혼용 대응 ("이인로" → "이인", DB "이인리"와 매칭)
     const roadStem = roadName.replace(/(로|길)$/, '');
+    // 지번 추출 (2026-10-19): "북구 마산리 29-24", "북구 용흥동 366", "북구 동빈1가 71-46" → 마지막 "리/동/읍/면/가+번지"
+    let jibunRi = '', jibunNum = '';
+    for (const m of String(addr||'').matchAll(/([가-힣]+\d*(?:리|동|읍|면|가))\s*(\d+(?:-\d+)?)/g)) { jibunRi = m[1]; jibunNum = m[2]; }
     const scored = new Map();
     const nameHit = (name, sc) => { const tn = String(name||'').trim(); if (tn) scored.set(tn, Math.max(scored.get(tn)||0, sc)); };
     (allData||[]).forEach(it => {
       const nm = String(it.name||''); if (!nm) return;
       const nn = norm(nm);
       if (nn.length >= 2 && na.includes(nn)) nameHit(nm, 50 + nn.length);
+      // 문자 동 식별자 매칭 (2026-10-19): 주소 없는 DB 행("흥해 블루하우스B") 대응.
+      // 이름 마지막 단어가 한글+단일 라틴문자("블루하우스B")면 core/letter 분리 후,
+      // 이름 단어들(마지막은 core)이 주소에 순서대로 등장하고 주소의 동 문자("B동")가 letter와 일치하면 90점.
+      {
+        const words = nm.split(/\s+/).filter(w => w.length > 0);
+        const lastW = words.length ? words[words.length - 1] : '';
+        const lm = lastW.match(/^([가-힣]+)([A-Za-z])$/);
+        if (lm) {
+          const core = lm[1], letter = lm[2].toUpperCase();
+          const targets = words.slice(0, -1).concat([core]);
+          let pos = 0, ok = true;
+          const naL = na.toLowerCase();
+          for (const w of targets) {
+            const idx = naL.indexOf(w.toLowerCase(), pos);
+            if (idx < 0) { ok = false; break; }
+            pos = idx + w.length;
+          }
+          if (ok) {
+            const dm = String(addr || '').match(/([A-Za-z])\s*동/);
+            if (dm && dm[1].toUpperCase() === letter) nameHit(nm, 90);
+          }
+        }
+      }
       const da = norm(it.addr);
       if (!da) return;
       if (roadName && da.includes(roadName)) {
@@ -1913,14 +1955,30 @@
       } else if (roadStem && roadStem.length >= 2 && emd && da.includes(emd) && da.includes(roadStem)) {
         nameHit(nm, 40);  // 지번/도로명 혼용: 읍면동 + 도로명 어간 (단독으로는 매칭 안 됨)
       }
+      // 지번 매칭 (2026-10-19): DB "…/ 경북 포항시 북구 마산리 29-24" ↔ 배달 "북구 마산리 29-24"
+      if (jibunRi && jibunHit(da, jibunRi, jibunNum)) nameHit(nm, 100);
     });
     if (!scored.size) return null;
     const sorted = [...scored.entries()].sort((a,b) => b[1]-a[1]);
     if (sorted[0][1] < 50) return null;
     if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) {
-      // 동점 타이브레이크 (2026-10-19): 배달 주소의 차수/단지 지정으로 후보를 좁힌다.
-      // 지정이 없거나 타이브레이크 후에도 2명 이상이면 기존대로 null (모호성 가드 유지).
       const tied = sorted.filter(e => e[1] === sorted[0][1]).map(e => e[0]);
+      // D1) 띄어쓰기만 다른 중복 이름 병합 (2026-10-19)
+      {
+        const keys = tied.map(nm => norm(nm));
+        if (new Set(keys).size === 1) {
+          const addrOf = nm => new Set((allData||[]).filter(i => String(i.name||'').trim() === nm).map(i => norm(i.addr||'')));
+          const nonEmpty = tied.map(nm => [...addrOf(nm)].filter(a => a));
+          if ([...new Set(nonEmpty.flat())].length <= 1) {
+            const ranked = tied.map(nm => {
+              const rows = (allData||[]).filter(i => String(i.name||'').trim() === nm);
+              return { nm, hasAddr: rows.some(i => String(i.addr||'').trim()), n: rows.length };
+            }).sort((a,b) => ((b.hasAddr?1:0)-(a.hasAddr?1:0)) || (b.n - a.n));
+            return { name: ranked[0].nm };
+          }
+        }
+      }
+      // D2) 동점 타이브레이크 (2026-10-19): 배달 주소의 차수/단지 지정으로 후보를 좁힌다.
       const desig = extractDesignation(addr, pr);
       if (desig) {
         const winners = tied.filter(nm => {
@@ -1928,6 +1986,53 @@
           return m && m[1] === desig[0] && m[2] === desig[1];
         });
         if (winners.length === 1) return { name: winners[0] };
+      }
+      // D3) 장소명 정확일치 타이브레이크 (2026-10-19): 괄호 안 장소명(아파트/주상복합 접미사 제거)이
+      // 후보 정규화명과 정확히 일치하면 그 쪽 선택. ("학산영진리더스아파트"→"학산 영진리더스" vs "영진리더스")
+      {
+        let place = '';
+        const pm = String(addr || '').match(/\(([^)]*)\)/);
+        if (pm) place = pm[1];
+        else {
+          const tm = String(addr || '').match(/(?:로|길)\s*\d+(?:번길\s*\d+)?(?:-\d+)?\s*(.*)$/);
+          if (tm) place = tm[1];
+        }
+        place = place.replace(/(아파트|주상복합)$/, '').trim();
+        const nPlace = norm(place).toLowerCase();
+        // "포항" 접두 변형도 시도 ("(포항학산영진리더스아파트)" → "학산영진리더스")
+        const nPlaces = nPlace.length >= 2
+          ? [...new Set([nPlace, nPlace.replace(/^포항/, '')])].filter(s => s.length >= 2)
+          : [];
+        for (const np of nPlaces) {
+          const exact = tied.filter(nm => norm(nm).toLowerCase() === np);
+          if (exact.length === 1) return { name: exact[0] };
+        }
+      }
+      // D4) 동 문자 타이브레이크 (2026-10-19): 주소의 동 문자("B동")와 후보 이름의 동 식별자가
+      // 정확히 1명만 일치하고, 동점자 전원이 동 식별자를 가질 때 그 쪽 선택.
+      // ("환타지아 A동"/"환타지아 B동" + "중성리 51-12 B동 203호" → B동)
+      {
+        const dm = String(addr || '').match(/([A-Za-z])\s*동/i);
+        if (dm) {
+          const dl = dm[1].toUpperCase();
+          const dongIdOf = nm => {
+            const w = String(nm).split(/\s+/).filter(Boolean).pop() || '';
+            let m = w.match(/^([가-힣]+)([A-Za-z])$/); if (m) return m[2].toUpperCase();
+            m = w.match(/^([A-Za-z])동$/i); if (m) return m[1].toUpperCase();
+            return null;
+          };
+          const ids = tied.map(dongIdOf);
+          if (ids.every(id => id !== null)) {
+            const winners = tied.filter((nm, i) => ids[i] === dl);
+            if (winners.length === 1) return { name: winners[0] };
+          }
+        }
+      }
+      // D5) 이름 포함 타이브레이크 (2026-10-19): 주소에 후보 이름이 그대로 들어있는 게 1명뿐이면 선택
+      {
+        const naL = na.toLowerCase();
+        const contained = tied.filter(nm => { const nn = norm(nm).toLowerCase(); return nn.length >= 2 && naL.includes(nn); });
+        if (contained.length === 1) return { name: contained[0] };
       }
       return null;
     }

@@ -2098,12 +2098,17 @@
   function renderDestPriority(container) {
     const items = complexItems(destInfo.name);
     if (!items.length) return false;  // 방어: 단지 데이터 없으면 일반 렌더로 폴백
+    // 공통비번 행(동 표기에 '공통' 포함)은 동/호수 핀과 무관하게 항상 최상단 노출 (2026-11-17 박동민 지시)
+    const isCommonRow = i => String(i.dong || '').includes('공통');
+    const commonItems = items.filter(isCommonRow);
+    const baseItems = commonItems.length ? items.filter(i => !isCommonRow(i)) : items;
+    const commonHtml = commonItems.slice().sort((a, b) => cmpDong(a, b)).map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
     const dong = destInfo.dong ? String(destInfo.dong).replace(/\s+/g, '') : '';
     const dongTxt = destInfo.dong ? ' ' + esc(destInfo.dong) : '';
     const hosuTxt = destInfo.hosu ? ' ' + esc(destInfo.hosu) + '호' : '';
     let bodyHtml = '';
     if (dong) {
-      const pinned = items.filter(i => {
+      const pinned = baseItems.filter(i => {
         const d = String(i.dong || '').replace(/\s+/g, '');
         return d && (d.indexOf(dong) === 0 || dong.indexOf(d) === 0);
       });
@@ -2121,12 +2126,12 @@
         });
         if (linePinned.length) {
           // 라인 매칭된 것만 표시
-          const rest = items.filter(i => linePinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
+          const rest = baseItems.filter(i => linePinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
           const pinnedHtml = linePinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
           const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
           if (!destExpanded) {
             bodyHtml = pinnedHtml +
-              ((linePinned.length > 0 && items.length > linePinned.length)
+              ((linePinned.length > 0 && baseItems.length > linePinned.length)
                 ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
           } else {
             bodyHtml = pinnedHtml +
@@ -2140,13 +2145,13 @@
             const bm = String(b.pw || '').includes(hs) ? 0 : 1;
             return am - bm || cmpDong(a, b);
           });
-          const rest = items.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
+          const rest = baseItems.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
           const pinnedHtml = pinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
           const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
           if (!destExpanded) {
-            const list = pinned.length ? pinned : items;
+            const list = pinned.length ? pinned : baseItems;
             bodyHtml = list.map(item => cardHtml({ item, d: 0, near: true }, false)).join('') +
-              ((pinned.length > 0 && items.length > pinned.length)
+              ((pinned.length > 0 && baseItems.length > pinned.length)
                 ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
           } else {
             bodyHtml = pinnedHtml +
@@ -2155,13 +2160,13 @@
           }
         }
       } else {
-        const rest = items.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
+        const rest = baseItems.filter(i => pinned.indexOf(i) < 0).sort((a, b) => cmpDong(a, b));
         const pinnedHtml = pinned.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
         const restHtml = rest.map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
         if (!destExpanded) {
-          const list = pinned.length ? pinned : items;
+          const list = pinned.length ? pinned : baseItems;
           bodyHtml = list.map(item => cardHtml({ item, d: 0, near: true }, false)).join('') +
-            ((pinned.length > 0 && items.length > pinned.length)
+            ((pinned.length > 0 && baseItems.length > pinned.length)
               ? '<button class="dest-expand-btn" onclick="expandDestPriority()">전체 동 펼치기 (' + items.length + '개)</button>' : '');
         } else {
           bodyHtml = pinnedHtml +
@@ -2170,8 +2175,9 @@
         }
       }
     } else {
-      bodyHtml = items.slice().sort((a, b) => cmpDong(a, b)).map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
+      bodyHtml = baseItems.slice().sort((a, b) => cmpDong(a, b)).map(item => cardHtml({ item, d: 0, near: true }, false)).join('');
     }
+    bodyHtml = commonHtml + bodyHtml;
     const destHtml =
       '<div class="dest-priority-head">📦 배달 목적지: ' + esc(destInfo.name) + dongTxt + hosuTxt +
       ' <span class="dest-x" onclick="dismissDestPriority(event)">✕</span></div>' +

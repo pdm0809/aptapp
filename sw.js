@@ -1,26 +1,22 @@
-const CACHE = 'aptapp-v40';
-const SHELL = ['./', 'index.html', 'manifest.json', 'icon-192.png', 'icon-512.png'];
-const SHELL_URLS = SHELL.map((p) => new URL(p, self.registration.scope).href);
-
-self.addEventListener('install', (e) => {
+// 서비스 종료용 킬스위치 서비스워커.
+// 설치 즉시 활성화되어 모든 캐시를 지우고 자기 자신을 해제한 뒤 열려 있는 창을 새로고침한다.
+self.addEventListener('install', () => {
   self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
 });
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+      await self.clients.claim();
+      const clients = await self.clients.matchAll({ type: 'window' });
+      await self.registration.unregister();
+      clients.forEach((c) => {
+        try { c.navigate(c.url); } catch (err) {}
+      });
+    })()
   );
 });
 
-self.addEventListener('fetch', (e) => {
-  const req = e.request;
-  if (req.method !== 'GET') return;
-  const url = new URL(req.url);
-  url.search = ''; url.hash = '';
-  // 앱 셸만 cache-first, 나머지(Supabase API 등)는 SW가 관여하지 않고 네트워크로 직행
-  if (!SHELL_URLS.includes(url.href)) return;
-  e.respondWith(caches.match(url.href).then((hit) => hit || fetch(req)));
-});
+// fetch는 가로채지 않는다 (네트워크 기본 동작).
